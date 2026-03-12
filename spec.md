@@ -1,7 +1,7 @@
 # Marketing Operations System — Technical Specification
 
-**Version:** 1.0
-**Date:** 2026-03-12
+**Version:** 2.0
+**Date:** 2026-03-13
 **Author:** Ben (product/architecture), with Claude (spec writing)
 **Status:** Draft — ready for engineering review
 
@@ -14,14 +14,14 @@
 3. [Data Model (Postgres)](#3-data-model-postgres)
 4. [OpenClaw Agent Configuration](#4-openclaw-agent-configuration)
 5. [Execution Flows (OpenClaw-Aligned)](#5-execution-flows-openclaw-aligned)
-6. [Custom Skills (Platform Integrations)](#6-custom-skills-platform-integrations)
-7. [Heartbeat and Cron Configuration](#7-heartbeat-and-cron-configuration)
-8. [Next.js Dashboard](#8-nextjs-dashboard)
-9. [Telegram Notification System](#9-telegram-notification-system)
+6. [Custom Skills](#6-custom-skills)
+7. [Automation (Heartbeat + Cron)](#7-automation-heartbeat--cron)
+8. [Telegram Integration](#8-telegram-integration)
+9. [Next.js Dashboard](#9-nextjs-dashboard)
 10. [File/Directory Structure](#10-filedirectory-structure)
 11. [Security & Permissions](#11-security--permissions)
 12. [Phased Build Plan](#12-phased-build-plan)
-13. [Appendix: API Reference Notes](#13-appendix-api-reference-notes)
+13. [Appendix](#13-appendix)
 
 ---
 
@@ -29,28 +29,39 @@
 
 ### What This Is
 
-A multi-business AI marketing operations system where:
-- Each business has a brand profile (tone, audience, claims, compliance rules)
-- AI agents plan, draft, review, and prepare social media content
-- Content moves through a strict state machine with human approval gates
-- Ben receives Telegram notifications when drafts are ready
-- Drafts are created on social platforms but never published autonomously
-- Analytics feed back into the next planning cycle
-- The system is portable: adding a new business means adding a new brand profile
+An AI marketing operations system where OpenClaw agents act as employees that Ben can manage, improve, and iterate on over time. The system:
+
+- Uses OpenClaw agents to plan, draft, and review social media content
+- Produces ready-to-post content (text + images + suggested schedule) that Ben batch-schedules manually on each platform
+- Sends Telegram notifications when content batches are ready
+- Allows Ben to interact directly with agents via Telegram to give feedback and improve their work
+- Tracks post performance via analytics that feed back into the agents' context
+- Provides a lightweight dashboard for content queue visibility, calendar, and analytics
+- Is designed to be simple, flexible, and easy to iterate on as AI improves
+
+### What This Is NOT
+
+- Not a CMS or content management platform
+- Not an autonomous publishing system — agents never post to social media
+- Not a rigid workflow tool — the process should be easy to change
+- Not a replacement for native platform tools — Ben schedules posts directly on LinkedIn/Facebook
 
 ### MVP Scope
 
 - **1 business:** NelsonAI
 - **2 platforms:** LinkedIn + Facebook
-- **1 notification channel:** Telegram
-- **1 analytics cadence:** Weekly
-- **No autonomous posting** — agents create drafts, Ben posts manually
+- **Primary interface:** Telegram (for notifications, approvals, and agent interaction)
+- **Secondary interface:** Next.js dashboard (for content queue, calendar, analytics)
+- **Analytics cadence:** Weekly
+- **Content scheduling:** Manual batch (Ben spends ~5 min/week scheduling on each platform)
 
 ### Core Philosophy
 
-- **Database owns lifecycle** — Postgres is the system of record for all content state, not Markdown files
-- **Agents decide, tools execute** — LLMs are used only where judgment is needed; deterministic code handles everything else
-- **3 agent brains, not 8** — Orchestrator, Content Writer, and Reviewer are the only LLM-powered agents. Publishing, analytics collection, brand context loading, and notifications are skills/workers
+- **Agents are employees, not scripts.** They learn from feedback, have memory, and improve over time via OpenClaw's native workspace (SOUL.md, memory/).
+- **Telegram is the primary interface.** Ben interacts with agents, approves content, and gets updates through Telegram — not a dashboard.
+- **The dashboard is for visibility, not control.** It shows what's in the queue, what's scheduled, and what performed well. The agents and Telegram handle the workflow.
+- **Simplicity enables iteration.** The fewer rigid systems, the easier it is to improve agents and processes as AI evolves.
+- **Manual posting preserves reach.** Native platform scheduling gets better algorithmic treatment than API-posted content.
 
 ---
 
@@ -60,39 +71,38 @@ A multi-business AI marketing operations system where:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    UI LAYER                                   │
-│  Next.js Dashboard (forked from openclaw-dashboard)          │
+│                    INTERFACES                                │
 │                                                              │
-│  Custom marketing pages:                                     │
-│  ├── Content pipeline kanban                                 │
-│  ├── Approval inbox                                          │
-│  ├── Agent activity feed                                     │
-│  ├── Brand profile editor (Phase 2)                          │
-│  ├── Calendar view (Phase 2)                                 │
-│  └── Analytics dashboard (Phase 2)                           │
+│  Telegram (primary)                                         │
+│  ├── Agent notifications (content ready, weekly summaries)  │
+│  ├── Approval flow (approve/reject via inline buttons)      │
+│  ├── Direct chat with Orchestrator for feedback/iteration   │
+│  └── Separate topics per agent role (optional)              │
 │                                                              │
-│  Kept from fork (ops/admin):                                 │
-│  ├── Agent management, Sessions, Skills, Channels            │
-│  ├── Cron scheduler, Config editor, Logs viewer              │
-│  └── Direct chat with agents                                 │
+│  Next.js Dashboard (secondary)                              │
+│  ├── Content queue (ready-to-post batch)                    │
+│  ├── Calendar view (planned content schedule)               │
+│  ├── Analytics (post performance, trends)                   │
+│  ├── Agent roster (who exists, roles, config links)         │
+│  └── Brand/business settings                                │
 │                                                              │
-│  Connects via: WebSocket (fork's gateway-client.ts, typed)   │
-│  Also connects via: REST API to internal Next.js API routes  │
+│  Connects via: WebSocket (gateway-client.ts) + REST (Prisma)│
 └──────────────────────┬──────────────────────────────────────┘
                        │
 ┌──────────────────────▼──────────────────────────────────────┐
 │                 DECISION LAYER (OpenClaw)                     │
 │                                                              │
-│  Orchestrator Agent (persistent, high-reasoning model)       │
-│  ├── Reads content state from Postgres                       │
+│  Orchestrator Agent (persistent)                             │
+│  ├── Reads content state from Postgres (via db-state-manager)│
 │  ├── Decides next action for each content item               │
-│  ├── Spawns sub-agent tasks (Content Writer, Reviewer)       │
+│  ├── Spawns sub-agents (Content Writer, Reviewer)            │
 │  ├── Orchestrates multi-step work via agent turns + scripts  │
-│  └── Triggers notifications via telegram-notifier skill      │
+│  ├── Sends Telegram notifications                            │
+│  └── Learns from feedback via OpenClaw memory system         │
 │                                                              │
 │  Content Writer (sub-agent, spawned per-task)                │
-│  ├── Receives: brief + brand context pack + platform rules   │
-│  ├── Produces: platform-specific draft copy                  │
+│  ├── Receives: brief + brand context + platform rules        │
+│  ├── Produces: platform-specific draft (copy + image notes)  │
 │  └── Model: standard (cheaper, optimized for generation)     │
 │                                                              │
 │  Reviewer (sub-agent, spawned per-task)                      │
@@ -106,43 +116,38 @@ A multi-business AI marketing operations system where:
 │               EXECUTION LAYER (Deterministic)                │
 │                                                              │
 │  Orchestration Jobs / Scripts:                               │
-│  ├── content-lifecycle.js                                    │
-│  │   (brief → draft → review → approve → publish → notify)  │
-│  └── weekly-planning.js                                      │
-│      (analytics summary → themes → briefs → job creation)    │
+│  ├── content-lifecycle.js                                  │
+│  │   (brief → draft → review → approve → ready)             │
+│  └── weekly-planning.js                                    │
+│      (analytics → themes → briefs → content items)           │
 │                                                              │
 │  Custom Skills:                                              │
-│  ├── brand-context-builder  (parse brand-profile.md → JSON)  │
-│  ├── linkedin-publisher     (LinkedIn Posts API: create draft)│
-│  ├── facebook-publisher     (Meta Graph API: create draft)   │
-│  ├── telegram-notifier      (Telegram Bot API: send alert)   │
+│  ├── brand-context-builder  (brand-profile.md → JSON pack)   │
+│  ├── telegram-notifier      (formatted alerts + buttons)     │
 │  ├── analytics-collector    (pull metrics from platforms)     │
 │  └── db-state-manager       (read/write content state in PG) │
 │                                                              │
-│  Heartbeat:                                                  │
-│  ├── Daily: "Any stale content items needing attention?"     │
-│  └── Weekly: "Trigger analytics collection and planning"     │
+│  Automation:                                                 │
+│  ├── Heartbeat: stale item checks, review backlog alerts     │
+│  └── Cron: weekly planning (Mon 9am), analytics (Mon 8am)    │
 │                                                              │
 └──────────────────────┬──────────────────────────────────────┘
                        │
 ┌──────────────────────▼──────────────────────────────────────┐
 │                    DATA LAYER                                │
 │                                                              │
-│  Postgres                                                    │
+│  Postgres (system of record)                                 │
 │  ├── businesses, brand_profiles                              │
 │  ├── content_items, content_versions                         │
-│  ├── review_records, approvals                               │
-│  ├── platform_publications                                   │
+│  ├── review_records                                          │
 │  ├── analytics_snapshots                                     │
-│  ├── notification_events                                     │
 │  └── audit_events                                            │
 │                                                              │
-│  OpenClaw Workspace (Markdown — config only)                 │
-│  ├── SOUL.md (orchestrator personality)                      │
-│  ├── brand-profile.md (per business)                         │
-│  ├── review-checklist.md                                     │
-│  ├── style-rules.md                                          │
-│  └── platform/*.md (platform-specific writing rules)         │
+│  OpenClaw Workspace (agent config + brand knowledge)         │
+│  ├── SOUL.md, AGENTS.md, HEARTBEAT.md (agent personality)    │
+│  ├── memory/ (agent learning — daily logs + long-term)       │
+│  ├── businesses/{slug}/brand-profile.md (brand knowledge)    │
+│  └── skills/ + jobs/ (custom skills and helper scripts)      │
 │                                                              │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -151,12 +156,14 @@ A multi-business AI marketing operations system where:
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| System of record | Postgres | Queryable, transactional, dashboard-friendly. Markdown is for config/prompts only |
-| Number of LLM agents | 3 (Orchestrator, Writer, Reviewer) | Minimize handoff complexity and token burn. Everything else is deterministic |
-| Workflow engine | App/worker orchestration + OpenClaw agent turns | Keep durable state and approvals in Postgres/API routes; use OpenClaw for judgment-heavy turns, heartbeats, cron, and notifications |
-| Dashboard framework | Fork of openclaw-dashboard (Next.js 16, App Router) | Gets gateway WebSocket client, typed RPC, React hooks for free. Add Postgres + marketing pages on top |
+| System of record | Postgres | Queryable, transactional, dashboard-friendly. Workspace files are for agent config/prompts only |
+| Number of LLM agents | 3 (Orchestrator, Writer, Reviewer) | Minimize complexity and token burn. Everything else is deterministic skills |
+| Workflow engine | Postgres-backed orchestration + OpenClaw agent turns | Use OpenClaw for judgment-heavy turns and automation triggers; use deterministic scripts/API routes for durable workflow steps |
+| Primary interface | Telegram | OpenClaw treats Telegram as first-class. Approvals, notifications, and agent feedback all happen here |
+| Dashboard purpose | Visibility only | Content queue, calendar, analytics. No approval UI — that's Telegram |
+| Publishing model | Manual batch scheduling | Ben schedules posts natively on each platform. Preserves organic reach, takes ~5 min/week |
+| Agent improvement | Conversation + memory | Ben chats with agents via Telegram. Feedback persists in OpenClaw's memory system |
 | Model strategy | High-reasoning for Orchestrator + Reviewer; standard for Writer | Quality where judgment matters, cost savings where generation suffices |
-| Publishing model | Draft-only, never autonomous | Safety. Ben reviews and posts manually |
 
 ---
 
@@ -169,13 +176,10 @@ businesses 1──* content_items 1──* content_versions
     │                │                    │
     │                │               review_records
     │                │
-    │           platform_publications
-    │                │
     │           analytics_snapshots
     │
-    └──* brand_profiles
+    └──* brand_profiles (workspace path reference)
 
-content_items 1──* notification_events
 content_items 1──* audit_events
 ```
 
@@ -188,14 +192,13 @@ CREATE TABLE businesses (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name            TEXT NOT NULL UNIQUE,
     slug            TEXT NOT NULL UNIQUE,
-    timezone        TEXT NOT NULL DEFAULT 'America/New_York',
+    timezone        TEXT NOT NULL DEFAULT 'Europe/London',
     status          TEXT NOT NULL DEFAULT 'active'
                     CHECK (status IN ('active', 'paused', 'archived')),
     enabled_platforms TEXT[] NOT NULL DEFAULT '{}',
     posting_cadence JSONB NOT NULL DEFAULT '{}',
     -- posting_cadence example:
     -- {"linkedin": {"posts_per_week": 3}, "facebook": {"posts_per_week": 2}}
-    notification_channel TEXT NOT NULL DEFAULT 'telegram',
     analytics_cadence TEXT NOT NULL DEFAULT 'weekly'
                     CHECK (analytics_cadence IN ('daily', 'weekly', 'biweekly')),
     brand_profile_path TEXT,  -- path to brand-profile.md in OpenClaw workspace
@@ -207,7 +210,7 @@ CREATE TABLE businesses (
 
 #### `content_items`
 
-This is the central table. Every piece of content flows through the state machine here.
+Central table. Every piece of content flows through a simplified state machine.
 
 ```sql
 CREATE TYPE content_state AS ENUM (
@@ -218,9 +221,7 @@ CREATE TYPE content_state AS ENUM (
     'in_review',
     'revision_required',
     'approved',
-    'publishing_draft',
-    'draft_on_platform',
-    'notified',
+    'ready_to_post',
     'posted',
     'analyzed',
     'archived'
@@ -245,25 +246,23 @@ CREATE TABLE content_items (
     --   "references": ["..."]
     -- }
     scheduled_date  DATE,
+    suggested_time  TIME,          -- agent-suggested posting time
     priority        TEXT DEFAULT 'normal'
                     CHECK (priority IN ('low', 'normal', 'high', 'urgent')),
 
     -- Current version tracking
     current_version_id UUID,  -- FK added after content_versions table
 
-    -- Platform publishing
-    platform_draft_id   TEXT,     -- ID returned by platform API
-    platform_draft_url  TEXT,     -- URL to view draft on platform
-    platform_post_id    TEXT,     -- ID after manual posting (if detectable)
-    platform_post_url   TEXT,
-
     -- Timestamps
     briefed_at          TIMESTAMPTZ,
     first_draft_at      TIMESTAMPTZ,
     approved_at         TIMESTAMPTZ,
-    published_draft_at  TIMESTAMPTZ,
     posted_at           TIMESTAMPTZ,
     analyzed_at         TIMESTAMPTZ,
+
+    -- Analytics flag
+    boost_candidate     BOOLEAN DEFAULT false,
+    boost_reason        TEXT,
 
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -272,6 +271,7 @@ CREATE TABLE content_items (
 CREATE INDEX idx_content_items_business_state ON content_items(business_id, state);
 CREATE INDEX idx_content_items_platform ON content_items(platform);
 CREATE INDEX idx_content_items_scheduled ON content_items(scheduled_date);
+CREATE INDEX idx_content_items_ready ON content_items(state) WHERE state = 'ready_to_post';
 ```
 
 #### `content_versions`
@@ -284,14 +284,16 @@ CREATE TABLE content_versions (
     content_item_id UUID NOT NULL REFERENCES content_items(id),
     version_number  INTEGER NOT NULL,
     body            TEXT NOT NULL,           -- the actual post copy
-    headline        TEXT,                    -- hook/headline if applicable
+    headline        TEXT,                    -- hook/opening line
+    image_prompt    TEXT,                    -- prompt for image generation
+    image_url       TEXT,                    -- generated/uploaded image URL
     visual_notes    TEXT,                    -- suggested image/visual idea
     alt_hooks       TEXT[],                  -- alternate opening lines
     metadata        JSONB NOT NULL DEFAULT '{}',
-    -- metadata can include: word_count, estimated_read_time, hashtags, etc.
+    -- metadata: word_count, hashtags, estimated_read_time, etc.
 
-    created_by      TEXT NOT NULL,           -- agent id that created this
-    model_used      TEXT,                    -- LLM model identifier
+    created_by      TEXT NOT NULL,           -- agent id
+    model_used      TEXT,
     prompt_tokens   INTEGER,
     completion_tokens INTEGER,
 
@@ -320,11 +322,11 @@ CREATE TABLE review_records (
     platform_fit    BOOLEAN,
     clarity_score   INTEGER CHECK (clarity_score BETWEEN 1 AND 5),
 
-    revision_notes  TEXT,          -- specific feedback if outcome = 'revise'
-    risk_flags      TEXT[],        -- e.g., ['unverified_claim', 'off_brand_tone']
+    revision_notes  TEXT,
+    risk_flags      TEXT[],
     confidence      TEXT CHECK (confidence IN ('high', 'medium', 'low')),
 
-    reviewer_agent  TEXT NOT NULL,  -- agent id
+    reviewer_agent  TEXT NOT NULL,
     model_used      TEXT,
     prompt_tokens   INTEGER,
     completion_tokens INTEGER,
@@ -335,30 +337,12 @@ CREATE TABLE review_records (
 CREATE INDEX idx_review_records_content ON review_records(content_item_id);
 ```
 
-#### `platform_publications`
-
-```sql
-CREATE TABLE platform_publications (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    content_item_id UUID NOT NULL REFERENCES content_items(id),
-    platform        TEXT NOT NULL,
-    action          TEXT NOT NULL CHECK (action IN ('draft_created', 'draft_updated', 'posted', 'deleted')),
-
-    platform_id     TEXT,          -- ID from the platform API
-    platform_url    TEXT,
-    api_response    JSONB,         -- raw API response for debugging
-    error           TEXT,          -- error message if failed
-
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-```
-
 #### `analytics_snapshots`
 
 ```sql
 CREATE TABLE analytics_snapshots (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    content_item_id UUID REFERENCES content_items(id),  -- nullable for aggregate snapshots
+    content_item_id UUID REFERENCES content_items(id),
     business_id     UUID NOT NULL REFERENCES businesses(id),
     platform        TEXT NOT NULL,
     snapshot_date   DATE NOT NULL,
@@ -369,10 +353,10 @@ CREATE TABLE analytics_snapshots (
     comments        INTEGER,
     shares          INTEGER,
     saves           INTEGER,
-    engagement_rate DECIMAL(5,4),    -- 0.0000 to 9.9999
+    engagement_rate DECIMAL(5,4),
     reach           INTEGER,
 
-    raw_data        JSONB,           -- full platform response
+    raw_data        JSONB,
     insights        TEXT,            -- AI-generated summary
 
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -381,36 +365,6 @@ CREATE TABLE analytics_snapshots (
 );
 
 CREATE INDEX idx_analytics_business_date ON analytics_snapshots(business_id, snapshot_date);
-```
-
-#### `notification_events`
-
-```sql
-CREATE TABLE notification_events (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    content_item_id UUID REFERENCES content_items(id),
-    business_id     UUID NOT NULL REFERENCES businesses(id),
-
-    channel         TEXT NOT NULL DEFAULT 'telegram',
-    event_type      TEXT NOT NULL,
-    -- event_types: 'draft_ready', 'revision_required', 'weekly_summary',
-    --              'stale_item_alert', 'error_alert'
-
-    payload         JSONB NOT NULL,
-    -- payload example:
-    -- {
-    --   "title": "NelsonAI — LinkedIn draft ready",
-    --   "hook": "AI is eating the world...",
-    --   "reviewer_status": "passed",
-    --   "draft_url": "https://..."
-    -- }
-
-    sent_at         TIMESTAMPTZ,
-    delivered       BOOLEAN DEFAULT false,
-    read_at         TIMESTAMPTZ,
-
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
-);
 ```
 
 #### `audit_events`
@@ -428,7 +382,7 @@ CREATE TABLE audit_events (
 
     from_state      content_state,
     to_state        content_state,
-    details         JSONB,               -- arbitrary context
+    details         JSONB,
 
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -437,9 +391,7 @@ CREATE INDEX idx_audit_content ON audit_events(content_item_id);
 CREATE INDEX idx_audit_business_time ON audit_events(business_id, created_at);
 ```
 
-### State Machine Transitions
-
-Valid transitions for `content_items.state`:
+### State Machine
 
 ```
 planned           → briefed
@@ -448,17 +400,18 @@ drafting          → draft_ready
 draft_ready       → in_review
 in_review         → approved | revision_required
 revision_required → drafting
-approved          → publishing_draft
-publishing_draft  → draft_on_platform
-draft_on_platform → notified
-notified          → posted          (manual by Ben)
+approved          → ready_to_post
+ready_to_post     → posted          (Ben marks as posted after manual scheduling)
 posted            → analyzed
 analyzed          → archived
 
 Any state         → archived        (manual override)
 ```
 
-Enforce these transitions in a Postgres function:
+Key differences from v1:
+- **Removed** `publishing_draft`, `draft_on_platform`, `notified` — no platform API publishing
+- **Added** `ready_to_post` — content is fully approved and waiting for Ben's weekly batch session
+- **Simplified** — 11 states instead of 13, clearer lifecycle
 
 ```sql
 CREATE OR REPLACE FUNCTION validate_state_transition()
@@ -471,21 +424,17 @@ DECLARE
         "draft_ready": ["in_review"],
         "in_review": ["approved", "revision_required"],
         "revision_required": ["drafting"],
-        "approved": ["publishing_draft"],
-        "publishing_draft": ["draft_on_platform"],
-        "draft_on_platform": ["notified"],
-        "notified": ["posted"],
+        "approved": ["ready_to_post"],
+        "ready_to_post": ["posted"],
         "posted": ["analyzed"],
         "analyzed": ["archived"]
     }'::JSONB;
     allowed TEXT[];
 BEGIN
-    -- Always allow transition to archived
     IF NEW.state = 'archived' THEN
         RETURN NEW;
     END IF;
 
-    -- Check if transition is valid
     SELECT ARRAY(
         SELECT jsonb_array_elements_text(valid_transitions -> OLD.state::TEXT)
     ) INTO allowed;
@@ -511,7 +460,7 @@ CREATE TRIGGER check_state_transition
 
 ### Overview
 
-Three LLM-powered agents, all running under a single OpenClaw Gateway instance. The Orchestrator is persistent (has its own workspace and heartbeat). The Content Writer and Reviewer are spawned as sub-agents per-task.
+Three LLM-powered agents running under a single OpenClaw Gateway. The Orchestrator is persistent with its own workspace, heartbeat, and Telegram binding. The Content Writer and Reviewer are spawned as sub-agents per-task.
 
 ### Gateway Config (`~/.openclaw/config.json5`)
 
@@ -540,16 +489,15 @@ Three LLM-powered agents, all running under a single OpenClaw Gateway instance. 
           activeHours: {
             start: "08:00",
             end: "22:00",
-            timezone: "America/New_York"
+            timezone: "Europe/London"
           },
           target: "telegram",
           lightContext: true,
           prompt: "Check HEARTBEAT.md and run your scheduled checks."
         },
         tools: {
-          // Final allow/deny should be validated against the installed OpenClaw version.
-          // At minimum this agent needs file access, process execution for repo scripts,
-          // and session spawning for sub-agents.
+          // Validate exact allow/deny names against the installed OpenClaw version.
+          // In practice this agent needs file access, process execution, and session spawning.
           allow: ["read", "write", "edit", "exec", "process", "sessions_spawn", "session_status"],
           deny: ["gateway"]
         }
@@ -581,40 +529,36 @@ Three LLM-powered agents, all running under a single OpenClaw Gateway instance. 
 ```markdown
 # Marketing Operations Orchestrator
 
-You are the operations manager for a multi-business AI marketing system. You coordinate content creation, review, and publishing workflows.
+You are the operations manager for a multi-business AI marketing system. You coordinate content creation and review workflows, producing ready-to-post content for Ben.
 
 ## Core Truths
 
 - You never write content yourself. You delegate to specialist sub-agents.
-- You never publish content. You create drafts on platforms for human review.
-- You read content state from the database, decide what to do next, and invoke the right tool or sub-agent.
+- You never publish content. You produce approved, ready-to-post content with suggested schedule times.
+- Ben manually schedules all posts on native platforms. Your job ends when content is approved and ready.
 - Quality over speed. A missed post is better than a bad one.
+- You learn from Ben's feedback. When he tells you something, remember it.
 
 ## How You Work
 
 1. Check Postgres for content items needing action (use db-state-manager skill)
 2. For items in `briefed` state: spawn a Content Writer sub-agent with the brief + brand context
 3. For items in `draft_ready` state: spawn a Reviewer sub-agent
-4. For items in `approved` state: invoke the platform publisher skill
-5. For published drafts: trigger Telegram notification
-6. On heartbeat: scan for stale items, run weekly planning if scheduled
+4. For items that pass review: move to `approved` → `ready_to_post`, notify via Telegram
+5. On heartbeat: scan for stale items, run weekly planning if scheduled
 
 ## Decision Rules
 
 - Never advance an item past `approved` without a `pass` review record
-- If a review returns `revise`, send the item back to `drafting` with revision notes attached
-- Maximum 2 revision cycles. After 2 revisions, flag for human attention.
-- If a platform API call fails, log the error and notify via Telegram. Do not retry automatically.
-
-## Permissions
-
-- CAN: read/write database, spawn sub-agents, invoke skills, send notifications
-- CANNOT: publish live posts, modify brand profiles, change system configuration
+- If a review returns `revise`, send back to `drafting` with revision notes attached
+- Maximum 2 revision cycles. After 2 revisions, flag for human attention via Telegram
+- When a batch of content is ready, send a single summary notification — not one per item
 
 ## Communication Style
 
 - Terse operational updates in Telegram. No fluff.
 - Include: business name, platform, content title/hook, action taken, any blockers
+- When Ben gives feedback, acknowledge it briefly and confirm what you'll change
 ```
 
 #### `HEARTBEAT.md`
@@ -624,17 +568,17 @@ You are the operations manager for a multi-business AI marketing system. You coo
 
 Run these checks every heartbeat cycle:
 
-1. **Stale items**: Query content_items where state has not changed in >24 hours and state is not 'posted', 'analyzed', or 'archived'. Alert via Telegram if found.
+1. **Stale items**: Query content_items where state has not changed in >24 hours and state is not in ('ready_to_post', 'posted', 'analyzed', 'archived'). Alert via Telegram if found.
 
 2. **Review backlog**: Count items in 'in_review' state for >6 hours. Alert if count > 0.
 
 3. **Weekly planning trigger**: If today is Monday and no content_items exist with scheduled_date in the current week, trigger the weekly-planning workflow.
 
-4. **Failed publications**: Check platform_publications for recent errors. Alert if found.
+4. **Analytics due**: If today is Monday and last analytics_snapshot for any active business is >7 days old, trigger analytics collection.
 
-5. **Analytics due**: If today is Monday and last analytics_snapshot for any active business is >7 days old, trigger analytics collection.
+5. **Batch ready reminder**: If there are items in 'ready_to_post' state that haven't been notified about recently, send a batch summary to Telegram.
 
-If nothing needs attention, return HEARTBEAT_OK.
+If nothing needs attention, return HEARTBEAT_OK silently (do not message Ben).
 ```
 
 #### `AGENTS.md`
@@ -647,7 +591,7 @@ You manage two specialist sub-agents:
 ## Content Writer
 - **Spawn for:** Creating platform-specific drafts from briefs
 - **Input:** Brief JSON, brand context pack, platform rules
-- **Output:** Draft copy, alternate hooks, visual notes
+- **Output:** Draft copy, alternate hooks, image prompt, visual notes
 - **Model:** Standard (cost-optimized for generation tasks)
 
 ## Reviewer
@@ -656,12 +600,31 @@ You manage two specialist sub-agents:
 - **Output:** PASS/REVISE verdict, specific notes, risk flags
 - **Model:** High-reasoning (needs judgment and nuance)
 
-Do not spawn agents for other tasks. Use skills for publishing, notifications, and analytics.
+Do not spawn agents for other tasks. Use skills for notifications, analytics, and database operations.
+```
+
+#### `USER.md`
+
+```markdown
+# About Ben
+
+Ben is the owner/operator of this marketing system. He's a software engineer who runs multiple businesses.
+
+## Preferences
+- Batch-oriented: prefers to do things in focused blocks, not be interrupted throughout the day
+- Direct communication: no fluff, just tell him what happened and what needs his attention
+- Trusts the pipeline: if content passes review, it's ready. Don't over-ask for confirmation
+- Improvement-focused: actively gives feedback to improve agent output quality over time
+
+## Schedule
+- Weekly batch scheduling: Ben schedules a week's worth of posts in one ~5 minute session per platform
+- Prefers to be notified when a full batch is ready, not per-item
+- Best notification times: weekday mornings (Mon–Fri, before 10am)
 ```
 
 ### Sub-Agent Prompt Templates
 
-These are not persistent agents. They are spawned via `sessions_spawn` with a task-specific prompt. The Orchestrator constructs the prompt dynamically using templates below.
+These are spawned via `sessions_spawn` with task-specific prompts. The Orchestrator constructs prompts dynamically.
 
 #### Content Writer Spawn Template
 
@@ -685,7 +648,8 @@ Return a JSON object:
 {
   "body": "The full post copy",
   "headline": "Hook/opening line",
-  "visual_notes": "Suggested image or visual",
+  "image_prompt": "Detailed prompt for generating a companion image",
+  "visual_notes": "Description of ideal visual if not using AI generation",
   "alt_hooks": ["Alternative hook 1", "Alternative hook 2"],
   "metadata": {
     "word_count": 0,
@@ -745,414 +709,93 @@ Return a JSON object:
 
 ## 5. Execution Flows (OpenClaw-Aligned)
 
-OpenClaw is the orchestration/runtime layer, but the durable workflow state lives in Postgres and the dashboard's API layer.
+This v2 design is directionally right: Telegram-first, manual posting, and fewer moving parts.
 
-**Important implementation note:** this design does **not** assume a special built-in `openclaw.invoke` workflow DSL or a native Lobster runtime inside OpenClaw. Instead, long-running flows are modeled as:
+The main OpenClaw-specific correction is that the system should **not** rely on a fictional built-in `openclaw.invoke` workflow DSL or assume Lobster is a native OpenClaw runtime primitive. Instead, model execution as a combination of:
 
-- Postgres records and state transitions
-- dashboard/API endpoints for deterministic writes
-- OpenClaw heartbeats + cron for scheduled triggers
-- `sessions_spawn` for specialist sub-agent work
-- repo-shipped skills/scripts for deterministic side effects (publishing drafts, analytics, notifications)
+- Postgres state transitions
+- OpenClaw agent turns / `sessions_spawn` for judgment-heavy work
+- cron and heartbeat for scheduled checks and nudges
+- deterministic scripts or app/API functions for durable write-back
 
 ### 5.1 Content Lifecycle Flow
 
-A content item moves through the lifecycle via explicit orchestration steps:
-
-1. **Planner creates item**
-   - Dashboard/API or weekly planning job inserts a `content_item` in `planned` or `briefed` state.
-
-2. **Orchestrator detects work**
-   - On heartbeat, cron, or manual prompt, the Orchestrator queries for items needing action.
-   - For `briefed` items, it transitions the item to `drafting` and spawns a Content Writer sub-agent via `sessions_spawn`.
-
-3. **Content Writer returns structured output**
-   - The Writer is given the brief, brand context pack, and platform rules.
-   - Its final response must be valid JSON matching the expected draft schema.
-
-4. **Deterministic save**
-   - A deterministic app function / repo script saves the returned draft as a new `content_version`, updates `current_version_id`, and transitions the item to `draft_ready`.
-
-5. **Review pass**
-   - The Orchestrator spawns a Reviewer sub-agent for `draft_ready` items.
-   - The Reviewer returns structured JSON (`pass` / `revise`, notes, risk flags, confidence).
-
-6. **Review write-back**
-   - Deterministic code writes a `review_record`.
-   - If the outcome is `revise`, the item transitions to `revision_required` and later back to `drafting`.
-   - If the outcome is `pass`, the item transitions to `approved`.
-
-7. **Draft creation on platform**
-   - Deterministic publisher code reads the approved version, resolves provider credentials, and creates a **draft/unpublished** post on the target platform.
-   - On success, write `platform_publications`, `platform_draft_id`, and `platform_draft_url`, then transition to `draft_on_platform`.
-
-8. **Notify Ben**
-   - A deterministic notifier sends Telegram (or future dashboard/in-app) notifications with links to the draft and item detail page.
+1. A planner or weekly planning job creates `content_items` in `planned` or `briefed`.
+2. The Orchestrator detects work via cron, heartbeat follow-up, or direct request.
+3. For `briefed` items, it spawns a Content Writer sub-agent using `sessions_spawn`.
+4. Deterministic code saves the returned draft as a `content_version` and transitions the item to `draft_ready`.
+5. The Orchestrator spawns a Reviewer sub-agent for `draft_ready` items.
+6. Deterministic code saves the review result.
+7. Passing items transition to `approved` and then `ready_to_post`.
+8. A Telegram summary is sent when a useful batch is ready, instead of noisy per-item chatter.
 
 ### 5.2 Weekly Planning Flow
 
-Weekly planning is also orchestrated through normal OpenClaw primitives rather than a special workflow DSL:
+1. A Gateway cron job runs on schedule.
+2. Analytics are collected for active businesses/platforms.
+3. The Orchestrator or a planning sub-agent receives analytics + brand context and proposes briefs.
+4. Deterministic code inserts or updates `content_items`.
+5. Ben receives a Telegram summary and can reply with changes.
 
-1. Cron fires on schedule (or Ben triggers it manually from the dashboard).
-2. Deterministic analytics code gathers the latest metrics for each business/platform.
-3. The Orchestrator (or a planning sub-agent) receives a compact analytics summary + brand context.
-4. The planning turn returns a structured list of proposed briefs.
-5. Deterministic code inserts those briefs into `content_items`.
-6. Ben is notified that the weekly plan is ready for review.
+### 5.3 Why this fits OpenClaw well
 
-### 5.3 Recommended Runtime Split
+- **OpenClaw is good at:** agent turns, memory, heartbeats, cron, and conversational iteration.
+- **The app/backend is good at:** durable writes, structured state transitions, admin actions, and deterministic reporting.
+- **Ben stays in Telegram:** this matches OpenClaw's strengths instead of forcing a dashboard-first control model.
 
-Use each layer for what it is good at:
+### 5.4 Approval and idempotency notes
 
-- **Dashboard/API layer**
-  - Interactive OAuth
-  - Account selection
-  - Secure token storage
-  - Deterministic DB writes and admin actions
-
-- **OpenClaw agent layer**
-  - Deciding what needs attention
-  - Spawning Writer/Reviewer sub-agents
-  - Heartbeat checks
-  - Cron-triggered planning / follow-up
-  - Human-facing operational summaries
-
-- **Deterministic skills/scripts**
-  - Brand context parsing
-  - Draft creation on LinkedIn/Facebook
-  - Analytics collection
-  - Telegram notification delivery
-
-### 5.4 Approval and Idempotency Rules
-
-Because the state machine is in Postgres, every orchestration step should be safe to re-run:
-
-- Publishing code should refuse to create a new draft if `platform_draft_id` already exists unless an explicit overwrite path is requested.
-- Review write-back should use version IDs so results are attached to the correct draft.
-- Planner insertion should dedupe on `business + platform + scheduled_date + campaign_theme` (or an equivalent idempotency key) to avoid duplicate weekly briefs.
-- Any retryable failure should log to `audit_events` and `platform_publications` rather than silently looping.
+- Do not assume a special approval gate runtime exists unless you verify it in the exact deployed toolchain.
+- Prefer explicit DB-backed approval state over in-memory workflow assumptions.
+- Make retries safe: writing a review twice or sending a batch summary twice should be detectable and harmless.
+- Batch notifications should be grouped and deduplicated so heartbeat/cron runs do not spam Telegram.
 
 ---
 
-## 6. Custom Skills (Platform Integrations)
+## 6. Custom Skills
 
-Each skill is a directory under `~/.openclaw/workspaces/marketing-ops/skills/`.
+Each skill lives in `~/.openclaw/workspaces/marketing-ops/skills/`. Only 4 custom skills needed (down from 6 in v1 — removed linkedin-publisher and facebook-publisher).
 
 ### 6.1 brand-context-builder
 
-**Purpose:** Parse `brand-profile.md` and produce a compact JSON context pack for other agents.
-
-**Directory:** `skills/brand-context-builder/`
-
-#### `SKILL.md`
+**Purpose:** Parse `brand-profile.md` and produce a compact JSON context pack for sub-agents.
 
 ```markdown
 ---
 name: brand-context-builder
 description: Parse a business brand profile and generate a compact context pack for content agents
 ---
-
-# Brand Context Builder
-
-## When to Use
-When the orchestrator needs to prepare brand context before spawning a content writer or reviewer.
-
-## What It Does
-1. Reads the brand-profile.md for the specified business
-2. Extracts: company summary, positioning, audience segments, tone guidelines, approved claims, forbidden claims, CTA preferences, content examples
-3. Returns a JSON context pack optimized for prompt injection
-
-## Usage
-Invoke with business_id. Returns JSON.
-
-## Implementation
-Run: `node skills/brand-context-builder/index.js --business-id <id>`
 ```
 
-#### `index.js` (Implementation outline)
+**Implementation:** Node.js script that:
+1. Reads business record from Postgres to get `brand_profile_path`
+2. Reads `brand-profile.md` from workspace
+3. Parses markdown sections into structured JSON
+4. Adds platform configs from business record
+5. Outputs JSON to stdout
 
-```javascript
-#!/usr/bin/env node
-/**
- * brand-context-builder skill
- *
- * Reads brand-profile.md from the workspace for a given business,
- * parses it into structured JSON, and outputs a compact context pack.
- *
- * Input: --business-id <uuid>
- * Output: JSON to stdout
- */
+### 6.2 telegram-notifier
 
-import { readFileSync } from 'fs';
-import { resolve } from 'path';
-import pg from 'pg';
+**Purpose:** Send formatted notifications to Ben via Telegram Bot API.
 
-const WORKSPACE_ROOT = process.env.OPENCLAW_WORKSPACE || '~/.openclaw/workspaces/marketing-ops';
+**Message Templates:**
 
-async function main() {
-    const businessId = process.argv.find((_, i, arr) => arr[i-1] === '--business-id');
-    if (!businessId) throw new Error('--business-id required');
-
-    // 1. Get brand_profile_path from Postgres
-    const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
-    const { rows } = await pool.query(
-        'SELECT * FROM businesses WHERE id = $1', [businessId]
-    );
-    const business = rows[0];
-    if (!business) throw new Error(`Business not found: ${businessId}`);
-
-    // 2. Read brand-profile.md
-    const profilePath = resolve(
-        WORKSPACE_ROOT.replace('~', process.env.HOME),
-        'businesses',
-        business.slug,
-        'brand-profile.md'
-    );
-    const profileContent = readFileSync(profilePath, 'utf-8');
-
-    // 3. Parse sections from markdown
-    const contextPack = parseMarkdownProfile(profileContent);
-
-    // 4. Add platform-specific configs from business record
-    contextPack.enabled_platforms = business.enabled_platforms;
-    contextPack.posting_cadence = business.posting_cadence;
-
-    // 5. Output
-    console.log(JSON.stringify(contextPack, null, 2));
-    await pool.end();
-}
-
-function parseMarkdownProfile(content) {
-    const sections = {};
-    let currentSection = null;
-    let currentContent = [];
-
-    for (const line of content.split('\n')) {
-        if (line.startsWith('## ')) {
-            if (currentSection) {
-                sections[currentSection] = currentContent.join('\n').trim();
-            }
-            currentSection = line.replace('## ', '').toLowerCase().replace(/\s+/g, '_');
-            currentContent = [];
-        } else {
-            currentContent.push(line);
-        }
-    }
-    if (currentSection) {
-        sections[currentSection] = currentContent.join('\n').trim();
-    }
-    return sections;
-}
-
-main().catch(err => {
-    console.error(JSON.stringify({ error: err.message }));
-    process.exit(1);
-});
+**Batch ready (primary notification):**
 ```
-
-### 6.2 linkedin-publisher
-
-**Purpose:** Create draft posts on LinkedIn via the Posts API.
-
-**Directory:** `skills/linkedin-publisher/`
-
-#### `SKILL.md`
-
-```markdown
----
-name: linkedin-publisher
-description: Create draft posts on LinkedIn using the Posts API
-metadata: {"openclaw": {"requires": {"env": ["LINKEDIN_ACCESS_TOKEN", "LINKEDIN_ORG_ID"]}}}
----
-
-# LinkedIn Publisher
-
-## When to Use
-When the orchestrator needs to create a draft post on LinkedIn after a review has passed.
-
-## What It Does
-1. Takes a content_item_id
-2. Reads the approved content version from Postgres
-3. Creates a draft post via LinkedIn Posts API
-4. Saves the platform draft ID and URL back to Postgres
-5. Returns the draft URL
-
-## Usage
-Invoke with content_item_id. Returns JSON with draft_url.
-
-## Implementation
-Run: `node skills/linkedin-publisher/index.js --content-item-id <id> --action create-draft`
-```
-
-#### `index.js` (Implementation outline)
-
-```javascript
-#!/usr/bin/env node
-/**
- * linkedin-publisher skill
- *
- * Creates draft posts on LinkedIn via the Posts API (v2).
- *
- * Required env:
- *   LINKEDIN_ACCESS_TOKEN - OAuth 2.0 token with w_member_social or w_organization_social scope
- *   LINKEDIN_ORG_ID       - Organization URN (e.g., "urn:li:organization:12345")
- *   DATABASE_URL           - Postgres connection string
- *
- * LinkedIn Posts API docs:
- *   https://learn.microsoft.com/en-us/linkedin/marketing/community-management/shares/posts-api
- *
- * Key notes:
- *   - Posts API replaced legacy ugcPosts API
- *   - Set lifecycleState: "DRAFT" for draft creation
- *   - Requires X-Restli-Protocol-Version: 2.0.0 header
- *   - Rate limit: 100 API calls per day per member
- */
-
-import pg from 'pg';
-
-const LINKEDIN_API = 'https://api.linkedin.com/rest/posts';
-
-async function createDraft(contentItemId) {
-    const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
-
-    // 1. Load content item and current version
-    const { rows: [item] } = await pool.query(`
-        SELECT ci.*, cv.body, cv.headline
-        FROM content_items ci
-        JOIN content_versions cv ON cv.id = ci.current_version_id
-        WHERE ci.id = $1
-    `, [contentItemId]);
-
-    if (!item) throw new Error(`Content item not found: ${contentItemId}`);
-    if (item.state !== 'approved') throw new Error(`Item not in approved state: ${item.state}`);
-
-    // 2. Create draft on LinkedIn
-    const response = await fetch(LINKEDIN_API, {
-        method: 'POST',
-        headers: {
-            'Authorization': `Bearer ${process.env.LINKEDIN_ACCESS_TOKEN}`,
-            'Content-Type': 'application/json',
-            'X-Restli-Protocol-Version': '2.0.0',
-            'LinkedIn-Version': '202501'
-        },
-        body: JSON.stringify({
-            author: process.env.LINKEDIN_ORG_ID,
-            lifecycleState: 'DRAFT',
-            visibility: 'PUBLIC',
-            commentary: item.body,
-            distribution: {
-                feedDistribution: 'MAIN_FEED'
-            }
-        })
-    });
-
-    if (!response.ok) {
-        const error = await response.text();
-        // Log failure to platform_publications
-        await pool.query(`
-            INSERT INTO platform_publications (content_item_id, platform, action, error, api_response)
-            VALUES ($1, 'linkedin', 'draft_created', $2, $3)
-        `, [contentItemId, `HTTP ${response.status}`, error]);
-
-        throw new Error(`LinkedIn API error: ${response.status} — ${error}`);
-    }
-
-    const draftId = response.headers.get('x-restli-id');
-    const draftUrl = `https://www.linkedin.com/feed/update/${draftId}/`;
-
-    // 3. Update content item
-    await pool.query(`
-        UPDATE content_items
-        SET platform_draft_id = $1, platform_draft_url = $2,
-            state = 'draft_on_platform', published_draft_at = now()
-        WHERE id = $3
-    `, [draftId, draftUrl, contentItemId]);
-
-    // 4. Log to platform_publications
-    await pool.query(`
-        INSERT INTO platform_publications (content_item_id, platform, action, platform_id, platform_url)
-        VALUES ($1, 'linkedin', 'draft_created', $2, $3)
-    `, [contentItemId, draftId, draftUrl]);
-
-    // 5. Audit event
-    await pool.query(`
-        INSERT INTO audit_events (business_id, content_item_id, actor, action, from_state, to_state, details)
-        VALUES ($1, $2, 'linkedin-publisher', 'state_transition', 'approved', 'draft_on_platform',
-                $3::jsonb)
-    `, [item.business_id, contentItemId, JSON.stringify({ draft_id: draftId, draft_url: draftUrl })]);
-
-    console.log(JSON.stringify({ draft_id: draftId, draft_url: draftUrl }));
-    await pool.end();
-}
-
-const action = process.argv.find((_, i, arr) => arr[i-1] === '--action');
-const contentItemId = process.argv.find((_, i, arr) => arr[i-1] === '--content-item-id');
-
-if (action === 'create-draft') {
-    createDraft(contentItemId).catch(err => {
-        console.error(JSON.stringify({ error: err.message }));
-        process.exit(1);
-    });
-}
-```
-
-### 6.3 facebook-publisher
-
-**Purpose:** Create draft posts on a Facebook Page via the Graph API.
-
-**Directory:** `skills/facebook-publisher/`
-
-#### Key Details
-
-```
-API Endpoint:   POST https://graph.facebook.com/v19.0/{page-id}/feed
-Auth:           Page Access Token (pages_manage_posts permission)
-Draft support:  Set published=false to create an unpublished/scheduled post
-Key fields:     message, published (false), scheduled_publish_time (optional)
-Rate limits:    200 calls per hour per page
-
-Required env:
-  FACEBOOK_PAGE_ID
-  FACEBOOK_PAGE_ACCESS_TOKEN
-  DATABASE_URL
-```
-
-Implementation follows the same pattern as `linkedin-publisher`: read from Postgres, call API, save result, update state, write audit event.
-
-### 6.4 telegram-notifier
-
-**Purpose:** Send formatted notification messages to Ben via Telegram Bot API.
-
-**Directory:** `skills/telegram-notifier/`
-
-#### Message Templates
-
-**Draft ready:**
-```
-🟢 NelsonAI — LinkedIn draft ready
+📦 NelsonAI — {count} posts ready to schedule
 ━━━━━━━━━━━━━━━━━━━━━
-Hook: {headline}
-Review: ✅ Passed (confidence: high)
-CTA: {cta}
+Platform breakdown:
+  LinkedIn: {linkedin_count} posts
+  Facebook: {facebook_count} posts
+
+Suggested schedule: {date_range}
 ━━━━━━━━━━━━━━━━━━━━━
-📎 Draft: {platform_draft_url}
-📋 Dashboard: {dashboard_url}/items/{content_item_id}
+📋 View batch: {dashboard_url}/queue
 ```
 
-**Revision required:**
+**Weekly analytics summary:**
 ```
-🟡 NelsonAI — Facebook draft needs revision
-━━━━━━━━━━━━━━━━━━━━━
-Issue: {revision_notes}
-Flags: {risk_flags}
-Attempt: {version_number}/2
-━━━━━━━━━━━━━━━━━━━━━
-📋 Dashboard: {dashboard_url}/items/{content_item_id}
-```
-
-**Weekly summary:**
-```
-📊 NelsonAI — Weekly Analytics Summary
+📊 NelsonAI — Weekly Performance
 ━━━━━━━━━━━━━━━━━━━━━
 Posts this week: {count}
 Best: {top_post_hook} ({engagement_rate}%)
@@ -1162,32 +805,37 @@ Recommendation: {ai_recommendation}
 📋 Dashboard: {dashboard_url}/analytics
 ```
 
+**Boost candidate:**
+```
+🚀 NelsonAI — Boost candidate detected
+━━━━━━━━━━━━━━━━━━━━━
+Post: {headline} ({platform})
+Engagement: {engagement_rate}% ({multiplier}x avg)
+━━━━━━━━━━━━━━━━━━━━━
+Consider boosting this via {platform}'s native ad tools.
+```
+
 **Stale item alert:**
 ```
-🔴 Stale items need attention
+🔴 {count} items stuck for >24h
 ━━━━━━━━━━━━━━━━━━━━━
-{count} items stuck for >24h:
 {item_list}
 ━━━━━━━━━━━━━━━━━━━━━
-📋 Dashboard: {dashboard_url}/pipeline
+📋 Dashboard: {dashboard_url}/queue
 ```
 
-#### Implementation
-
+**Implementation:**
 ```
 API: POST https://api.telegram.org/bot{token}/sendMessage
 Required env:
   TELEGRAM_BOT_TOKEN
-  TELEGRAM_CHAT_ID    (Ben's chat ID or group chat ID)
-  DATABASE_URL
-  DASHBOARD_URL       (base URL for deep links)
+  TELEGRAM_CHAT_ID
+  DASHBOARD_URL
 ```
 
-### 6.5 analytics-collector
+### 6.3 analytics-collector
 
-**Purpose:** Pull engagement metrics from LinkedIn and Facebook APIs, save to `analytics_snapshots`.
-
-**Directory:** `skills/analytics-collector/`
+**Purpose:** Pull engagement metrics from LinkedIn and Facebook, save to `analytics_snapshots`.
 
 ```
 LinkedIn Analytics:
@@ -1201,38 +849,38 @@ Facebook Insights:
   Returns: impressions, reach, engagement, clicks
 
 Implementation:
-  1. Query content_items in 'posted' state with platform_post_id set
+  1. Query content_items in 'posted' state
   2. For each: call platform analytics API
   3. Save to analytics_snapshots
-  4. If all items for the week are collected, generate AI summary
-  5. Transition items to 'analyzed' state
+  4. Check for boost candidates (engagement_rate > 2x business average)
+  5. Generate AI summary of weekly performance
+  6. Transition items to 'analyzed' state
 ```
 
-### 6.6 db-state-manager
+**Note:** Analytics collection requires platform API OAuth tokens. These are read-only scopes — separate from any publishing permissions.
 
-**Purpose:** Provide a clean interface for agents to read/write Postgres without raw SQL.
+### 6.4 db-state-manager
 
-**Directory:** `skills/db-state-manager/`
-
-#### Supported Actions
+**Purpose:** Clean interface for agents to read/write Postgres without raw SQL.
 
 | Action | Description |
 |--------|-------------|
 | `read` | Read a content item by ID |
 | `list` | List content items by state, business, platform |
-| `transition` | Move a content item to the next state (validates against state machine) |
+| `transition` | Move a content item to the next state (validates via state machine) |
 | `create-version` | Save a new content version for an item |
 | `save-review` | Save a review record and update item state |
 | `bulk-create-items` | Create multiple content items from a weekly plan |
 | `stats` | Return counts by state for a business |
+| `ready-batch` | Return all `ready_to_post` items grouped by platform with suggested schedule |
 
 This skill is the only way agents interact with the database. No agent has direct SQL access.
 
 ---
 
-## 7. Heartbeat and Cron Configuration
+## 7. Automation (Heartbeat + Cron)
 
-### Orchestrator Heartbeat
+### Heartbeat
 
 ```json5
 // In gateway config, under orchestrator agent:
@@ -1241,404 +889,208 @@ heartbeat: {
     activeHours: {
         start: "08:00",
         end: "22:00",
-        timezone: "America/New_York"
+        timezone: "Europe/London"
     },
     target: "telegram",
     lightContext: true,
-    // Only inject HEARTBEAT.md, not full workspace context
-    prompt: "Run your heartbeat checklist from HEARTBEAT.md. Use the db-state-manager skill to check content states. If nothing needs attention, return HEARTBEAT_OK."
+    prompt: "Run your heartbeat checklist from HEARTBEAT.md. Use the db-state-manager skill to check content states. If nothing needs attention, return HEARTBEAT_OK silently."
 }
 ```
 
-### Cron Jobs (managed by Gateway scheduler)
+**Heartbeat is for checks and nudges only** — not the source of truth for workflow state progression. It scans for issues (stale items, backlogs) and alerts Ben via Telegram.
+
+### Cron Jobs
 
 ```text
-Use the Gateway cron scheduler to create isolated agent-turn jobs (recommended) or system events, for example:
+Use Gateway cron jobs for scheduled work. In practice, create jobs that either:
+- run an isolated `agentTurn` with a precise prompt, or
+- enqueue a `systemEvent` for the orchestrator to pick up on its next heartbeat.
 
-- Monday 08:00 local: "Collect analytics for all active businesses and summarize anything notable."
-- Monday 09:00 local: "Generate the weekly content plan for all active businesses using the latest analytics and brand context."
-
-In implementation, create these with Gateway cron jobs rather than relying on a static pseudo-schema in `config.json5`. Each job should either:
-- run an isolated `agentTurn` with an explicit prompt, or
-- enqueue a `systemEvent` that wakes the orchestrator on its next heartbeat.
+Examples:
+- Monday 08:00 local — collect weekly analytics and summarize what changed
+- Monday 09:00 local — generate the upcoming week's content plan from analytics + brand context
 ```
+
+### How Heartbeat and Cron Work Together
+
+| What | Mechanism | When |
+|------|-----------|------|
+| Stale item alerts | Heartbeat | Every 30 min during active hours |
+| Review backlog alerts | Heartbeat | Every 30 min |
+| Batch ready reminders | Heartbeat | When items are in `ready_to_post` |
+| Weekly content planning | Cron | Monday 9am |
+| Weekly analytics collection | Cron | Monday 8am |
+| Content lifecycle progression | Orchestrator + deterministic scripts | Triggered by cron, heartbeat follow-up, or manual request |
 
 ---
 
-## 8. Next.js Dashboard
+## 8. Telegram Integration
 
-### Starting Point: Fork of openclaw-dashboard
+### Overview
 
-**Repo:** https://github.com/actionagentai/openclaw-dashboard
-
-The dashboard is built by **forking the community openclaw-dashboard**, not from scratch. This fork provides the entire OpenClaw gateway integration layer out of the box, saving significant development time.
-
-#### What the Fork Provides (Keep As-Is)
-
-| Component | What It Does | Keep? |
-|-----------|-------------|-------|
-| `lib/gateway-client.ts` | WebSocket client with challenge/nonce auth, auto-reconnect, typed RPC calls | **Yes — critical** |
-| `lib/types.ts` | TypeScript types for 80+ gateway RPC methods and 17 event types | **Yes — critical** |
-| `hooks/use-openclaw-gateway.ts` | React hook for gateway connection state | **Yes** |
-| `hooks/use-openclaw-chat.ts` | Streaming chat with token-by-token delivery | **Yes** |
-| `hooks/use-openclaw-agents.ts` | Agent CRUD and management | **Yes** |
-| `hooks/use-openclaw-sessions.ts` | Session browsing and history | **Yes** |
-| `contexts/OpenClawContext.tsx` | Shared gateway connection provider | **Yes** |
-| `app/agents/` page | Agent management UI | **Yes** — useful for ops |
-| `app/sessions/` page | Session browsing | **Yes** — useful for debugging |
-| `app/cron/` page | Cron job scheduling UI | **Yes** — useful for ops |
-| `app/logs/` page | Real-time log streaming | **Yes** — useful for debugging |
-| `app/config/` page | Configuration editor | **Yes** — useful for ops |
-| `app/skills/` page | Skills marketplace with eligibility | **Yes** — useful for ops |
-| `components/Sidebar.tsx` | Navigation sidebar | **Yes — modify** to add marketing pages |
-
-#### What to Remove from the Fork
-
-| Component | Why Remove |
-|-----------|-----------|
-| `app/voice/` page | Not relevant to marketing ops |
-| `app/nodes/` page | Device pairing not needed |
-| `hooks/use-openclaw-tts.ts` | Voice features not needed |
-| `hooks/use-speech-to-text.ts` | Voice features not needed |
-| `components/FloatingMicButton.tsx` | Voice features not needed |
-| `components/VoiceTranscriptPreview.tsx` | Voice features not needed |
-| `app/api/tts-audio/` | Audio proxy not needed |
-
-#### What to Add (Custom Marketing Pages)
-
-These are the new pages and features built on top of the fork:
-
-| New Page | Purpose |
-|----------|---------|
-| `app/pipeline/` | Content pipeline kanban board |
-| `app/inbox/` | Approval inbox — items needing Ben's action |
-| `app/items/[id]/` | Content item detail — versions, reviews, audit log |
-| `app/activity/` | Agent activity feed — real-time from gateway WS |
-| `app/brands/[slug]/` | Brand profile viewer/editor (Phase 2) |
-| `app/calendar/` | Calendar view (Phase 2) |
-| `app/analytics/` | Analytics dashboard (Phase 2) |
-| `app/settings/` | Business config, API key status, agent health |
-
-#### What to Add (Infrastructure)
-
-The fork is stateless (no database). We add Postgres via Prisma:
-
-| Addition | Purpose |
-|----------|---------|
-| `prisma/schema.prisma` | Prisma schema mirroring Postgres tables from Section 3 |
-| `lib/db.ts` | Prisma client singleton |
-| `lib/state-machine.ts` | Client-side state transition validation |
-| `lib/telegram.ts` | Telegram webhook handler for "Mark Posted" callbacks |
-| `app/api/content-items/` | CRUD and state transition API routes |
-| `app/api/businesses/` | Business management API routes |
-| `app/api/reviews/` | Review record API routes |
-| `app/api/analytics/` | Analytics snapshot API routes |
-| `app/api/audit/` | Audit event API routes |
-
-### Tech Stack (Inherited + Extended)
-
-| Component | Choice | Source |
-|-----------|--------|--------|
-| Framework | Next.js 16 (App Router) | Fork |
-| React | React 19 | Fork |
-| Styling | Tailwind CSS v4 + Lucide icons | Fork (add shadcn/ui for marketing pages) |
-| Gateway connection | WebSocket v3 with typed RPC | Fork (`gateway-client.ts`, `types.ts`) |
-| Hooks | Pre-built gateway hooks | Fork (6 hooks) |
-| Database | Postgres via Prisma ORM | **New** — added for content state management |
-| Auth | Single-user admin (env-based secret) | **New** — fork has no auth |
-| Hosting | Self-hosted or Vercel | Either |
-
-### Route Structure (Full — fork pages + new pages)
-
-```
-app/
-├── layout.tsx                  # Modified: add business switcher to fork's sidebar
-├── page.tsx                    # Modified: redirect to /pipeline instead of /overview
-│
-│── # --- NEW MARKETING PAGES (custom) ---
-├── pipeline/
-│   └── page.tsx                # Content pipeline kanban board
-│
-├── inbox/
-│   └── page.tsx                # Approval inbox — items needing Ben's action
-│
-├── items/
-│   └── [id]/
-│       └── page.tsx            # Content item detail — versions, reviews, audit log
-│
-├── activity/
-│   └── page.tsx                # Agent activity feed — real-time from gateway WS
-│
-├── brands/
-│   └── [slug]/
-│       └── page.tsx            # Brand profile viewer/editor (Phase 2)
-│
-├── calendar/
-│   └── page.tsx                # Calendar view (Phase 2)
-│
-├── analytics/
-│   └── page.tsx                # Analytics dashboard (Phase 2)
-│
-├── settings/
-│   └── page.tsx                # Business config, API keys, agent status
-│
-│── # --- KEPT FROM FORK (OpenClaw ops/admin) ---
-├── (openclaw)/                 # Route group for fork's original pages
-│   ├── overview/page.tsx       # Gateway health, channel status
-│   ├── chat/page.tsx           # Direct chat with agents
-│   ├── agents/page.tsx         # Agent management
-│   ├── sessions/page.tsx       # Session browsing
-│   ├── models/page.tsx         # LLM model catalog
-│   ├── skills/page.tsx         # Skills marketplace
-│   ├── channels/page.tsx       # Channel linking
-│   ├── cron/page.tsx           # Cron job management
-│   ├── config/page.tsx         # Configuration editor
-│   └── logs/page.tsx           # Real-time logs
-│
-│── # --- NEW API ROUTES (custom) ---
-└── api/
-    ├── content-items/
-    │   ├── route.ts            # CRUD for content items
-    │   └── [id]/
-    │       ├── route.ts        # Single item operations
-    │       ├── transition/
-    │       │   └── route.ts    # State transitions
-    │       └── versions/
-    │           └── route.ts    # Content versions
-    │
-    ├── businesses/
-    │   └── route.ts
-    │
-    ├── reviews/
-    │   └── route.ts
-    │
-    ├── analytics/
-    │   └── route.ts
-    │
-    ├── audit/
-    │   └── route.ts
-    │
-    └── webhooks/
-        └── telegram/
-            └── route.ts        # Telegram callback for "Mark Posted" buttons
-```
-
-### MVP Screens (Phase 1)
-
-#### Screen 1: Content Pipeline (Kanban)
-
-The primary working view. Columns map to content states.
-
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│  [NelsonAI ▼]                                    Marketing Ops       │
-├──────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│  Planned(3)  Drafting(1)  In Review(2)  Approved(1)  On Platform(2) │
-│  ┌────────┐  ┌────────┐  ┌────────┐    ┌────────┐   ┌────────┐     │
-│  │LinkedIn│  │Facebook│  │LinkedIn│    │Facebook│   │LinkedIn│     │
-│  │Mar 17  │  │Mar 15  │  │Mar 14  │    │Mar 14  │   │Mar 13  │     │
-│  │AI opps │  │Tips for│  │Why CFOs│    │3 signs │   │The hid.│     │
-│  │        │  │small.. │  │need ...|    │your ...|   │cost ...|     │
-│  │🔵 plan │  │🟡 draft│  │🟠 rev  │    │🟢 ready│   │📌 live │     │
-│  └────────┘  └────────┘  └────────┘    └────────┘   └────────┘     │
-│  ┌────────┐              ┌────────┐                  ┌────────┐     │
-│  │Facebook│              │Facebook│                  │Facebook│     │
-│  │Mar 18  │              │Mar 14  │                  │Mar 12  │     │
-│  │How we  │              │Stop do.│                  │Is your │     │
-│  │saved.. │              │this ...|                  │team ...|     │
-│  │🔵 plan │              │🟠 rev  │                  │📌 live │     │
-│  └────────┘              └────────┘                  └────────┘     │
-│                                                                      │
-└──────────────────────────────────────────────────────────────────────┘
-```
-
-Interactions:
-- Click card → opens item detail page
-- Drag not needed (state transitions happen via agent actions or explicit buttons)
-- Filter by platform, date range, priority
-- "Mark as Posted" button on `draft_on_platform` items (manual action by Ben)
-
-#### Screen 2: Approval Inbox
-
-Focused view of items needing Ben's attention.
-
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│  Approval Inbox                                          2 pending   │
-├──────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│  ┌────────────────────────────────────────────────────────────────┐  │
-│  │ 🟢 LinkedIn — "Why CFOs need AI literacy in 2026"              │  │
-│  │ Review: PASSED (confidence: high) · Version 1                  │  │
-│  │ Hook: "Your CFO doesn't need to code. But they need to..."     │  │
-│  │ CTA: Book intro call                                           │  │
-│  │                                                                │  │
-│  │ [View Draft ↗]  [View on LinkedIn ↗]  [✅ Mark Posted]         │  │
-│  └────────────────────────────────────────────────────────────────┘  │
-│                                                                      │
-│  ┌────────────────────────────────────────────────────────────────┐  │
-│  │ 🟡 Facebook — "3 signs your team is ready for AI"              │  │
-│  │ Review: PASSED (confidence: medium) · Version 2 (revised once) │  │
-│  │ Hook: "Most teams think they're not ready. Here's the test..." │  │
-│  │ CTA: Download checklist                                        │  │
-│  │ ⚠️ Reviewer note: "Medium confidence — CTA could be stronger" │  │
-│  │                                                                │  │
-│  │ [View Draft ↗]  [View on Facebook ↗]  [✅ Mark Posted]         │  │
-│  └────────────────────────────────────────────────────────────────┘  │
-│                                                                      │
-└──────────────────────────────────────────────────────────────────────┘
-```
-
-#### Screen 3: Agent Activity Feed
-
-Real-time feed showing what agents are doing, powered by the OpenClaw Gateway WebSocket.
-
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│  Agent Activity                                    [Live 🔴]         │
-├──────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│  12:34 PM  🤖 Orchestrator                                          │
-│            Spawned Content Writer for: "AI opportunity snapshot"      │
-│            Platform: LinkedIn · Business: NelsonAI                    │
-│                                                                      │
-│  12:33 PM  🤖 Orchestrator                                          │
-│            Heartbeat check: 1 item in review > 6hrs — alerting      │
-│                                                                      │
-│  12:15 PM  📝 Content Writer                                        │
-│            Draft completed for: "Stop doing this to your Facebook"   │
-│            Version 1 · 247 words · 2 alt hooks generated             │
-│                                                                      │
-│  12:10 PM  🔍 Reviewer                                              │
-│            Review: REVISE for "Is your team actually ready?"         │
-│            Issue: CTA too vague, claim in paragraph 2 unverifiable   │
-│                                                                      │
-│  11:45 AM  🤖 Orchestrator                                          │
-│            ✅ Heartbeat OK — no items needing attention               │
-│                                                                      │
-└──────────────────────────────────────────────────────────────────────┘
-```
-
-### API Routes Design
-
-All API routes follow this pattern:
-
-```typescript
-// app/api/content-items/route.ts
-
-import { prisma } from '@/lib/db';
-import { NextResponse } from 'next/server';
-
-// GET /api/content-items?business_id=...&state=...&platform=...
-export async function GET(request: Request) {
-    const { searchParams } = new URL(request.url);
-    const businessId = searchParams.get('business_id');
-    const state = searchParams.get('state');
-    const platform = searchParams.get('platform');
-
-    const items = await prisma.contentItem.findMany({
-        where: {
-            ...(businessId && { businessId }),
-            ...(state && { state }),
-            ...(platform && { platform }),
-        },
-        include: {
-            currentVersion: true,
-            reviewRecords: { orderBy: { createdAt: 'desc' }, take: 1 },
-        },
-        orderBy: { scheduledDate: 'asc' },
-    });
-
-    return NextResponse.json(items);
-}
-
-// POST /api/content-items/{id}/transition
-// Body: { "to_state": "posted" }
-// Validates transition via Postgres trigger
-```
-
-### WebSocket Gateway Connection (Provided by Fork)
-
-The forked openclaw-dashboard already includes a complete, production-grade gateway client.
-**Do not rewrite this.** Use the existing implementation:
-
-```
-# Files provided by the fork:
-lib/gateway-client.ts    # WebSocket client with challenge/nonce auth, reconnection, typed RPC
-lib/types.ts             # TypeScript types for 80+ RPC methods, 17 event types
-hooks/use-openclaw-gateway.ts   # Connection state hook
-contexts/OpenClawContext.tsx     # Shared connection provider
-```
-
-**Connection flow (already implemented by the fork):**
-The fork already handles the gateway handshake, session bootstrap, reconnects, and typed RPC/event plumbing. Treat `lib/gateway-client.ts` as the source of truth for protocol details rather than re-documenting the wire sequence in this spec.
-
-**Events relevant to marketing ops:**
-Use the fork's typed gateway events to surface session activity, completions, heartbeat outcomes, and cron/job activity. The exact event names and payloads should be taken from the fork's generated types, not hard-coded from this document.
-
-**Usage in custom marketing pages:**
-
-```typescript
-// In any custom page, use the fork's existing hook:
-import { useOpenClawGateway } from '@/hooks/use-openclaw-gateway';
-
-export default function ActivityFeed() {
-    const { connected, events, rpc } = useOpenClawGateway();
-
-    // events already typed via lib/types.ts
-    // rpc() gives typed access to 80+ gateway methods
-
-    return (
-        <div>
-            {events.map(event => (
-                <ActivityEventRow key={event.id} event={event} />
-            ))}
-        </div>
-    );
-}
-```
-
----
-
-## 9. Telegram Notification System
+Telegram is the primary interface. Ben interacts with the system through Telegram for:
+1. **Notifications** — batch ready, weekly summaries, alerts
+2. **Approvals / feedback** — Ben reviews summaries, replies with adjustments, or uses simple custom actions exposed by the app/bot
+3. **Direct feedback** — chatting with the Orchestrator to improve agent behavior
 
 ### Setup
 
 1. Create a Telegram bot via @BotFather
 2. Get the bot token
 3. Start a conversation with the bot (or add to a group)
-4. Get the chat ID via `https://api.telegram.org/bot{token}/getUpdates`
+4. Get the chat ID
 5. Set env vars: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
+
+OpenClaw handles the Telegram channel natively — the bot is bound to the Orchestrator agent, so messaging the bot = talking to the Orchestrator.
+
+### Interaction Patterns
+
+**Receiving notifications:**
+The Orchestrator sends formatted messages via the `telegram-notifier` skill when batches are ready, analytics are collected, or issues arise.
+
+**Giving agent feedback:**
+```
+Ben: "The last few LinkedIn posts have been too formal. Loosen the tone —
+      more conversational, like talking to a peer not presenting to a board."
+
+Orchestrator: "Got it. I'll update the Content Writer's context to aim for
+               peer-to-peer conversational tone on LinkedIn. This will apply
+               to all future NelsonAI LinkedIn drafts."
+```
+The Orchestrator writes this to its memory (`memory/YYYY-MM-DD.md` and eventually `memory.md`) so it persists across sessions.
+
+**Approving weekly plans:**
+When weekly planning runs, the system sends a summary to Telegram. Ben replies to approve or adjust, and deterministic code records the resulting plan changes.
 
 ### Notification Events
 
-| Event | Trigger | Priority |
-|-------|---------|----------|
-| `draft_ready` | Content item reaches `draft_on_platform` state | Normal |
-| `revision_required` | Reviewer returns `revise` verdict | Normal |
-| `weekly_plan_ready` | Weekly planning pipeline completes | Low |
-| `weekly_summary` | Weekly analytics are collected | Low |
-| `stale_item_alert` | Heartbeat detects items stuck >24h | High |
-| `error_alert` | Platform API error or agent failure | High |
+| Event | Trigger | Frequency |
+|-------|---------|-----------|
+| `batch_ready` | Content items move to `ready_to_post` | When a batch completes (not per-item) |
+| `weekly_plan_ready` | Weekly planning pipeline completes | Monday morning |
+| `weekly_summary` | Weekly analytics collected | Monday morning |
+| `boost_candidate` | Post outperforms 2x average | As detected |
+| `stale_item_alert` | Items stuck >24h | Heartbeat (max 1/day) |
+| `error_alert` | Agent failure or unexpected error | Immediately |
 
-### Actionable Buttons (Telegram Inline Keyboard)
+---
 
-```json
-{
-    "inline_keyboard": [
-        [
-            {"text": "View Draft ↗", "url": "{platform_draft_url}"},
-            {"text": "Open Dashboard ↗", "url": "{dashboard_url}/items/{id}"}
-        ],
-        [
-            {"text": "✅ Mark Posted", "callback_data": "mark_posted:{content_item_id}"}
-        ]
-    ]
-}
+## 9. Next.js Dashboard
+
+### Purpose
+
+The dashboard is a **visibility tool**, not a workflow tool. Ben uses it to:
+- See what content is ready to schedule this week
+- View a calendar of planned/posted content
+- Check analytics and performance trends
+- See agent roster and configuration
+- Manage business/brand settings
+
+### Starting Point: Fork of openclaw-dashboard
+
+**Repo:** https://github.com/actionagentai/openclaw-dashboard
+
+The fork provides the full OpenClaw gateway integration (WebSocket client, typed RPC, React hooks) out of the box.
+
+#### What the Fork Provides (Keep)
+
+| Component | Purpose |
+|-----------|---------|
+| `lib/gateway-client.ts` | WebSocket client with auth, reconnect, typed RPC |
+| `lib/types.ts` | Types for 80+ RPC methods, 17 event types |
+| `hooks/use-openclaw-gateway.ts` | Connection state hook |
+| `hooks/use-openclaw-chat.ts` | Streaming chat |
+| `hooks/use-openclaw-agents.ts` | Agent management |
+| `hooks/use-openclaw-sessions.ts` | Session browsing |
+| `contexts/OpenClawContext.tsx` | Shared gateway connection |
+| `app/agents/` | Agent management UI |
+| `app/sessions/` | Session browser |
+| `app/cron/` | Cron scheduler |
+| `app/logs/` | Log viewer |
+| `app/config/` | Config editor |
+| `app/skills/` | Skills marketplace |
+
+#### What to Remove
+
+Voice pages, nodes/device pairing, TTS hooks, mic button, audio proxy.
+
+#### New Pages (Custom)
+
+| Page | Purpose |
+|------|---------|
+| `app/queue/` | **Content queue** — all `ready_to_post` items grouped by platform, with copy + images + suggested times. This is what Ben works from during batch scheduling |
+| `app/calendar/` | **Calendar** — visual month/week view of scheduled and posted content |
+| `app/analytics/` | **Analytics** — post performance, engagement trends, boost candidates |
+| `app/agents-overview/` | **Agent roster** — who exists, their role, links to workspace files (SOUL.md, memory/) so Ben can see and understand agent config |
+| `app/settings/` | **Settings** — business config, brand profile path, posting cadence, API key status |
+
+#### New Infrastructure
+
+| Addition | Purpose |
+|----------|---------|
+| `prisma/schema.prisma` | Prisma schema mirroring Postgres tables |
+| `lib/db.ts` | Prisma client singleton |
+| `app/api/content-items/` | CRUD and state transition API routes |
+| `app/api/businesses/` | Business management API routes |
+| `app/api/analytics/` | Analytics API routes |
+
+### MVP Screen: Content Queue
+
+The primary dashboard view. Shows everything that's ready for Ben to schedule.
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│  Content Queue                    [NelsonAI ▼]    Week of Mar 17     │
+├──────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  LinkedIn (3 posts ready)                                            │
+│  ┌────────────────────────────────────────────────────────────────┐  │
+│  │ Mon Mar 17 · 9:00 AM (suggested)                               │  │
+│  │ "Why CFOs need AI literacy in 2026"                            │  │
+│  │ Your CFO doesn't need to code. But they need to understand...  │  │
+│  │ 📷 Image: [View] · CTA: Book intro call                       │  │
+│  │ [Copy Text 📋]  [View Full Draft]                              │  │
+│  └────────────────────────────────────────────────────────────────┘  │
+│  ┌────────────────────────────────────────────────────────────────┐  │
+│  │ Wed Mar 19 · 12:00 PM (suggested)                              │  │
+│  │ "The hidden cost of 'we'll do AI later'"                       │  │
+│  │ Every month you wait, your competitors ship another...         │  │
+│  │ 📷 Image: [View] · CTA: DM me                                 │  │
+│  │ [Copy Text 📋]  [View Full Draft]                              │  │
+│  └────────────────────────────────────────────────────────────────┘  │
+│                                                                      │
+│  Facebook (2 posts ready)                                            │
+│  ┌────────────────────────────────────────────────────────────────┐  │
+│  │ Tue Mar 18 · 6:00 PM (suggested)                               │  │
+│  │ "3 signs your team is ready for AI"                            │  │
+│  │ Most teams think they're not ready. Here's the test...         │  │
+│  │ 📷 Image: [View] · CTA: Download checklist                    │  │
+│  │ [Copy Text 📋]  [View Full Draft]  [✅ Mark Posted]           │  │
+│  └────────────────────────────────────────────────────────────────┘  │
+│                                                                      │
+│  [Mark All as Posted]                                                │
+│                                                                      │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
-The `mark_posted` callback triggers a state transition in Postgres via a webhook from the Telegram bot.
+Key features:
+- **Copy Text** button copies post copy to clipboard (for pasting into native platform)
+- **View** opens the generated image for download
+- **Mark Posted** transitions state to `posted` (Ben clicks after scheduling on the platform)
+- Grouped by platform so Ben can batch-schedule one platform at a time
+- Suggested times help Ben decide when to schedule each post
+
+### Tech Stack
+
+| Component | Source |
+|-----------|--------|
+| Next.js 16 (App Router) | Fork |
+| React 19 | Fork |
+| Tailwind CSS v4 + shadcn/ui | Fork + new |
+| Gateway WebSocket + typed RPC | Fork |
+| Pre-built gateway hooks | Fork |
+| Postgres via Prisma ORM | New |
+| Auth (single-user, env-based) | New |
 
 ---
 
@@ -1656,6 +1108,10 @@ The `mark_posted` callback triggers a state transition in Postgres via a webhook
 │       ├── AGENTS.md                   # Sub-agent roster
 │       ├── HEARTBEAT.md               # Heartbeat checklist
 │       ├── USER.md                     # User preferences
+│       │
+│       ├── memory/                     # OpenClaw native memory
+│       │   ├── memory.md              # Long-term memory (curated)
+│       │   └── YYYY-MM-DD.md          # Daily logs (auto-generated)
 │       │
 │       ├── businesses/
 │       │   └── nelsonai/
@@ -1679,12 +1135,6 @@ The `mark_posted` callback triggers a state transition in Postgres via a webhook
 │           ├── brand-context-builder/
 │           │   ├── SKILL.md
 │           │   └── index.js
-│           ├── linkedin-publisher/
-│           │   ├── SKILL.md
-│           │   └── index.js
-│           ├── facebook-publisher/
-│           │   ├── SKILL.md
-│           │   └── index.js
 │           ├── telegram-notifier/
 │           │   ├── SKILL.md
 │           │   └── index.js
@@ -1694,59 +1144,52 @@ The `mark_posted` callback triggers a state transition in Postgres via a webhook
 │           ├── db-state-manager/
 │           │   ├── SKILL.md
 │           │   └── index.js
-│           └── jobs/
+│           └── workflows/
 │               ├── content-lifecycle.js
 │               └── weekly-planning.js
 │
 ├── agents/
 │   └── orchestrator/
-│       └── agent/                      # agentDir (auth, sessions — do not share)
+│       └── agent/                      # agentDir (auth, sessions)
 │
 └── skills/                             # Global skills (managed/installed)
 ```
 
-### Next.js Dashboard (Forked from openclaw-dashboard)
+### Next.js Dashboard
 
 ```
-Dashboard-OpenClaw/                      # Forked from github.com/actionagentai/openclaw-dashboard
-├── package.json                         # Fork's deps + prisma, shadcn/ui added
+Dashboard-OpenClaw/
+├── package.json
 ├── next.config.ts
-├── tailwind.config.ts
-├── tsconfig.json
-├── .env.local                           # DATABASE_URL, OPENCLAW_WS_URL, ADMIN_SECRET, etc.
+├── .env.local                           # DATABASE_URL, OPENCLAW_WS_URL, etc.
 │
-├── prisma/                              # NEW — not in fork
-│   ├── schema.prisma                    # Mirrors Postgres schema from Section 3
+├── prisma/
+│   ├── schema.prisma
 │   └── migrations/
 │
-├── app/                                 # Fork uses app/ not src/app/
-│   ├── layout.tsx                       # MODIFIED — add business switcher + marketing nav
-│   ├── page.tsx                         # MODIFIED — redirect to /pipeline
+├── app/
+│   ├── layout.tsx                       # Modified — add marketing nav
+│   ├── page.tsx                         # Redirect to /queue
 │   │
-│   ├── # --- NEW MARKETING PAGES ---
-│   ├── pipeline/page.tsx                # Content pipeline kanban
-│   ├── inbox/page.tsx                   # Approval inbox
-│   ├── items/[id]/page.tsx              # Content item detail
-│   ├── activity/page.tsx                # Agent activity feed
-│   ├── brands/[slug]/page.tsx           # Brand profile editor (Phase 2)
-│   ├── calendar/page.tsx                # Calendar view (Phase 2)
-│   ├── analytics/page.tsx               # Analytics dashboard (Phase 2)
+│   ├── # --- MARKETING PAGES ---
+│   ├── queue/page.tsx                   # Content queue (primary view)
+│   ├── calendar/page.tsx                # Calendar view
+│   ├── analytics/page.tsx               # Analytics dashboard
+│   ├── agents-overview/page.tsx         # Agent roster + config links
 │   ├── settings/page.tsx                # Business config
 │   │
-│   ├── # --- KEPT FROM FORK ---
+│   ├── # --- FROM FORK (OpenClaw ops) ---
 │   ├── (openclaw)/
-│   │   ├── overview/page.tsx            # Gateway health
-│   │   ├── chat/page.tsx                # Direct agent chat
-│   │   ├── agents/page.tsx              # Agent management
-│   │   ├── sessions/page.tsx            # Session browser
-│   │   ├── models/page.tsx              # Model catalog
-│   │   ├── skills/page.tsx              # Skills marketplace
-│   │   ├── channels/page.tsx            # Channel linking
-│   │   ├── cron/page.tsx                # Cron scheduler
-│   │   ├── config/page.tsx              # Config editor
-│   │   └── logs/page.tsx                # Log viewer
+│   │   ├── overview/page.tsx
+│   │   ├── chat/page.tsx                # Direct agent chat (useful for debugging)
+│   │   ├── agents/page.tsx
+│   │   ├── sessions/page.tsx
+│   │   ├── skills/page.tsx
+│   │   ├── cron/page.tsx
+│   │   ├── config/page.tsx
+│   │   └── logs/page.tsx
 │   │
-│   └── api/                             # NEW — marketing API routes
+│   └── api/
 │       ├── content-items/
 │       │   ├── route.ts
 │       │   └── [id]/
@@ -1754,49 +1197,37 @@ Dashboard-OpenClaw/                      # Forked from github.com/actionagentai/
 │       │       ├── transition/route.ts
 │       │       └── versions/route.ts
 │       ├── businesses/route.ts
-│       ├── reviews/route.ts
-│       ├── analytics/route.ts
-│       ├── audit/route.ts
-│       └── webhooks/telegram/route.ts
+│       └── analytics/route.ts
 │
-├── # --- FROM FORK (do not modify) ---
 ├── lib/
-│   ├── gateway-client.ts                # Fork: WebSocket client w/ auth + reconnect
-│   └── types.ts                         # Fork: 80+ RPC method types, 17 event types
+│   ├── gateway-client.ts                # Fork: WebSocket client
+│   ├── types.ts                         # Fork: RPC method types
+│   ├── db.ts                            # New: Prisma singleton
+│   └── state-machine.ts                 # New: State validation
 │
-├── hooks/                               # Fork: pre-built gateway hooks
+├── hooks/                               # Fork: gateway hooks
 │   ├── use-openclaw-gateway.ts
 │   ├── use-openclaw-chat.ts
 │   ├── use-openclaw-agents.ts
-│   ├── use-openclaw-sessions.ts
-│   └── use-openclaw-models.ts
+│   └── use-openclaw-sessions.ts
 │
 ├── contexts/
-│   └── OpenClawContext.tsx               # Fork: shared gateway connection
-│
-├── # --- NEW FILES ---
-├── lib/
-│   ├── db.ts                            # NEW: Prisma client singleton
-│   ├── state-machine.ts                 # NEW: Client-side state validation
-│   └── telegram.ts                      # NEW: Telegram webhook handler
+│   └── OpenClawContext.tsx               # Fork: gateway connection
 │
 ├── components/
-│   ├── Sidebar.tsx                      # MODIFIED — add marketing nav items
-│   ├── # --- NEW COMPONENTS ---
+│   ├── Sidebar.tsx                      # Modified — marketing nav
 │   ├── marketing/
-│   │   ├── pipeline-board.tsx
+│   │   ├── content-queue.tsx
 │   │   ├── content-card.tsx
-│   │   ├── approval-card.tsx
-│   │   ├── activity-feed.tsx
-│   │   ├── business-switcher.tsx
-│   │   └── notification-badge.tsx
-│   └── ui/                              # NEW: shadcn/ui components
+│   │   ├── calendar-view.tsx
+│   │   ├── analytics-charts.tsx
+│   │   ├── agent-roster.tsx
+│   │   └── business-switcher.tsx
+│   └── ui/                              # shadcn/ui components
 │
-├── types/                               # NEW: marketing-specific types
-│   ├── content.ts
-│   └── api.ts
-│
-└── tests/
+└── types/
+    ├── content.ts
+    └── api.ts
 ```
 
 ---
@@ -1807,28 +1238,16 @@ Dashboard-OpenClaw/                      # Forked from github.com/actionagentai/
 
 | Actor | Can Do | Cannot Do |
 |-------|--------|-----------|
-| Orchestrator | Read/write DB via skill, spawn sub-agents, invoke skills, send notifications | Publish live posts, modify brand profiles, change system config |
-| Content Writer | Generate draft copy | Access DB, invoke platform APIs, send notifications |
-| Reviewer | Review drafts, produce verdicts | Modify drafts, publish, access platform APIs |
-| linkedin-publisher | Create drafts on LinkedIn, update DB state | Publish live (lifecycleState always = DRAFT) |
-| facebook-publisher | Create unpublished posts on Facebook, update DB state | Set published=true |
-| analytics-collector | Read-only access to platform analytics APIs | Modify content state directly beyond analytics write-back |
-| Ben (dashboard) | All actions, manual state transitions, final publishing authority | N/A |
+| Orchestrator | Read/write DB via skill, spawn sub-agents, invoke skills, send notifications | Publish posts, modify brand profiles, change system config |
+| Content Writer | Generate draft copy | Access DB, send notifications, invoke other skills |
+| Reviewer | Review drafts, produce verdicts | Modify drafts, access DB directly, send notifications |
+| analytics-collector | Read-only platform analytics APIs, write to analytics_snapshots | Modify content, trigger workflows |
+| Ben (dashboard + Telegram) | All actions, manual state transitions, agent feedback | N/A |
 
-### API Key Management
-
-Interactive OAuth is handled in the dashboard/app layer. OpenClaw skills consume already-resolved provider credentials and do not perform browser OAuth themselves.
-
-Credential source precedence for LinkedIn/Facebook:
-
-1. Default active connected account in Postgres for `business + provider`
-2. App environment fallback bound to `FALLBACK_CREDENTIAL_BUSINESS_SLUG`
-3. Local OpenClaw credential file fallback under `~/.openclaw/credentials/marketing-ops/<provider>.json`
-
-Fallback credentials may still be local-only, but config templates remain secret-free:
+### Environment Variables
 
 ```bash
-# Platform APIs
+# Platform APIs (read-only analytics scopes only)
 LINKEDIN_ACCESS_TOKEN=
 LINKEDIN_ORG_ID=
 FACEBOOK_PAGE_ID=
@@ -1842,202 +1261,157 @@ TELEGRAM_CHAT_ID=
 DATABASE_URL=postgresql://...
 
 # OpenClaw
-OPENCLAW_GATEWAY_WS_URL=ws://localhost:3001
+OPENCLAW_GATEWAY_WS_URL=ws://localhost:18789
 
 # Dashboard
 DASHBOARD_URL=http://localhost:3000
-ADMIN_SECRET=  # Simple auth for single-user MVP
+ADMIN_SECRET=
 ```
 
 ### Safety Rails
 
-1. **No autonomous publishing.** Publisher skills always create drafts (LinkedIn `lifecycleState: DRAFT`, Facebook `published: false`). There is no code path that sets a post to live.
+1. **No autonomous publishing.** There is no publishing skill. Agents produce ready-to-post content. Ben schedules manually on native platforms.
 2. **State machine enforced in Postgres.** Invalid transitions raise exceptions. No agent can skip review.
-3. **Maximum 2 revision cycles.** After 2 failed reviews, item is flagged for human attention instead of infinite loops.
-4. **Audit everything.** Every state transition, agent action, and API call is logged to `audit_events`.
-5. **Sub-agent tool restrictions.** Content Writer and Reviewer sub-agents cannot access gateway, cron, or exec tools.
+3. **Maximum 2 revision cycles.** After 2 failed reviews, flagged for human attention.
+4. **Audit everything.** Every state transition and agent action logged to `audit_events`.
+5. **Sub-agent restrictions.** Content Writer and Reviewer cannot access gateway, cron, or exec tools.
+6. **Analytics tokens are read-only.** Platform API tokens only have analytics/read scopes, never publishing scopes.
 
 ---
 
 ## 12. Phased Build Plan
 
-### Phase 0: Foundation (Days 1-2)
-**Goal:** Data model and brand profile ready.
+### Phase 0: Foundation (Days 1–2)
+**Goal:** Database, brand profile, and OpenClaw workspace ready.
 
 - [ ] Set up Postgres (local or cloud)
 - [ ] Run all migration SQL from Section 3
 - [ ] Validate state machine trigger works
-- [ ] Write `brand-profile.md` for NelsonAI (use template below)
+- [ ] Create OpenClaw workspace structure (`~/.openclaw/workspaces/marketing-ops/`)
+- [ ] Write `SOUL.md`, `AGENTS.md`, `HEARTBEAT.md`, `USER.md`
+- [ ] Write NelsonAI `brand-profile.md`, `compliance.md`, `audience.md`, `offers.md`
 - [ ] Write `review-checklist.md`, `style-rules.md`
 - [ ] Write `platform/linkedin.md`, `platform/facebook.md`
 
-**Deliverable:** Database running, NelsonAI brand files in workspace.
+**Deliverable:** Database running, full workspace files written, NelsonAI brand profile complete.
 
-### Phase 1: OpenClaw Core (Days 2-4)
-**Goal:** Orchestrator agent running with Telegram.
+### Phase 1: OpenClaw Core + Telegram (Days 2–5)
+**Goal:** Orchestrator running, talking to Ben via Telegram, reading DB state.
 
 - [ ] Install OpenClaw (`npm install -g openclaw@latest`)
 - [ ] Run onboarding wizard (`openclaw onboard --install-daemon`)
-- [ ] Configure gateway: agents, channels (Telegram), bindings
-- [ ] Write `SOUL.md`, `AGENTS.md`, `HEARTBEAT.md`
+- [ ] Configure gateway: agents, Telegram channel, bindings
 - [ ] Build `db-state-manager` skill
 - [ ] Build `brand-context-builder` skill
-- [ ] Test: manually create a content_item in DB, verify orchestrator picks it up
+- [ ] Build `telegram-notifier` skill
+- [ ] Test: manually create a content_item in DB, verify Orchestrator picks it up via Telegram
+- [ ] Test: send feedback to Orchestrator via Telegram, verify it writes to memory
 
-**Deliverable:** Orchestrator responds to Telegram messages, reads DB state.
+**Deliverable:** Orchestrator responds via Telegram, reads DB, can be given feedback.
 
-### Phase 2: LinkedIn Integration (Days 4-8)
-**Goal:** End-to-end content creation for LinkedIn.
+### Phase 2: Content Pipeline (Days 5–10)
+**Goal:** End-to-end content creation — brief to ready-to-post.
 
-- [ ] Set up LinkedIn App (developer.linkedin.com), obtain OAuth token
-- [ ] Build `linkedin-publisher` skill
-- [ ] Test draft creation via API independently
-- [ ] Wire into orchestrator workflow
 - [ ] Build Content Writer sub-agent spawn template
 - [ ] Build Reviewer sub-agent spawn template
-- [ ] Test full cycle: brief → draft → review → publish draft
+- [ ] Implement deterministic content lifecycle orchestration helper(s)
+- [ ] Implement weekly planning prompt + write-back helper(s)
+- [ ] Configure heartbeat
+- [ ] Configure cron jobs (weekly planning + analytics)
+- [ ] Test: full cycle from brief → draft → review → ready_to_post → Telegram notification
 
-**Deliverable:** Can go from a content brief to a LinkedIn draft post.
+**Deliverable:** Can go from a content brief to approved, ready-to-post content with Telegram notification.
 
-### Phase 3: Orchestration + Notifications (Days 8-12)
-**Goal:** Deterministic orchestration and Telegram alerts.
-
-- [ ] Implement deterministic orchestration helpers / scripts for content lifecycle transitions
-- [ ] Implement weekly planning job prompt + write-back path
-- [ ] Add idempotency and retry handling for background runs
-- [ ] Build `telegram-notifier` skill
-- [ ] Configure inline keyboard buttons for Telegram
-- [ ] Set up heartbeat configuration
-- [ ] Configure cron jobs (weekly planning, weekly analytics)
-- [ ] Test: full pipeline from brief to Telegram notification
-
-**Deliverable:** Content moves through the Postgres-backed lifecycle automatically, and Ben gets notified.
-
-### Phase 4: Dashboard MVP (Days 12-18)
-**Goal:** Web UI for pipeline management and approvals.
+### Phase 3: Dashboard MVP (Days 10–16)
+**Goal:** Web UI for content queue and agent visibility.
 
 - [ ] Fork `actionagentai/openclaw-dashboard` repo
-- [ ] Verify fork runs and connects to gateway (`npm install && npm run dev`)
-- [ ] Remove unneeded pages: voice/, nodes/, tts hooks, mic button
-- [ ] Move fork's original pages into `(openclaw)/` route group
-- [ ] Add Prisma dependency, create `schema.prisma` from Section 3
-- [ ] Run `prisma migrate dev` to verify schema matches existing Postgres
-- [ ] Install shadcn/ui for marketing-specific components
-- [ ] Modify `Sidebar.tsx`: add marketing nav (Pipeline, Inbox, Activity) above fork's ops pages
-- [ ] Add `business-switcher.tsx` component to layout
-- [ ] Build API routes for content items, transitions, reviews
-- [ ] Build Pipeline Kanban page (uses Prisma for data, fork's gateway hooks for real-time)
-- [ ] Build Approval Inbox page
-- [ ] Build Agent Activity Feed (subscribe to fork's gateway events via `useOpenClawGateway`)
-- [ ] Build Content Item Detail page
-- [ ] Simple auth middleware (env-based admin secret)
+- [ ] Verify fork runs and connects to gateway
+- [ ] Remove voice/nodes pages
+- [ ] Move fork pages into `(openclaw)/` route group
+- [ ] Add Prisma, create `schema.prisma`
+- [ ] Install shadcn/ui
+- [ ] Modify `Sidebar.tsx` — add marketing nav
+- [ ] Build API routes for content items
+- [ ] Build Content Queue page (primary view)
+- [ ] Build Agent Roster page
+- [ ] Build Settings page
+- [ ] Simple auth middleware
 
-**Deliverable:** Functional dashboard with pipeline view, approval inbox, and all fork ops pages working.
+**Deliverable:** Dashboard with content queue, agent roster, and fork's ops pages.
 
-**Note on fork maintenance:** Pin the fork to a specific commit. Do not auto-merge upstream changes. Periodically review upstream releases and cherry-pick relevant updates to `lib/gateway-client.ts` and `lib/types.ts` if the gateway protocol evolves.
+### Phase 4: Analytics + Calendar (Days 16–20)
+**Goal:** Performance feedback loop and schedule visibility.
 
-### Phase 5: Facebook + Analytics (Days 18-22)
-**Goal:** Second platform and feedback loop.
+- [ ] Set up LinkedIn analytics API access (read-only scope)
+- [ ] Set up Facebook insights API access (read-only scope)
+- [ ] Build `analytics-collector` skill
+- [ ] Wire analytics into weekly planning pipeline context
+- [ ] Build Analytics dashboard page
+- [ ] Build Calendar view page
+- [ ] Add boost candidate detection to analytics collector
+- [ ] Test: full weekly cycle — plan → create → review → schedule → analyze → plan again
 
-- [ ] Set up Facebook App, obtain Page Access Token
-- [ ] Build `facebook-publisher` skill
-- [ ] Add Facebook-specific prompt template for Content Writer
-- [ ] Build `analytics-collector` skill (LinkedIn + Facebook)
-- [ ] Wire analytics into weekly planning pipeline
-- [ ] Test full cycle for both platforms
+**Deliverable:** Complete feedback loop working. Analytics inform next week's content planning.
 
-**Deliverable:** LinkedIn + Facebook both working, analytics feeding back into planning.
+### Phase 5: Polish (Days 20–23)
+**Goal:** Production-ready for daily use.
 
-### Phase 6: Polish + Hardening (Days 22-25)
-**Goal:** Production-ready system.
-
-- [ ] Error handling and retry logic for all platform API calls
-- [ ] Rate limit tracking and backoff
-- [ ] Dashboard: Settings page (API key status, agent health)
-- [ ] Dashboard: Brand profile viewer
-- [ ] Comprehensive logging and monitoring
-- [ ] Document runbook for common operations
+- [ ] Error handling in all skills
+- [ ] Rate limit tracking for analytics APIs
+- [ ] Dashboard: business switcher for multi-business (prepare for future)
+- [ ] Comprehensive logging
 - [ ] Load test: create 20 content items, run full pipeline
+- [ ] Document workspace file purposes and how to modify agents
 
-**Deliverable:** System ready for daily use.
+**Deliverable:** System ready for daily use with NelsonAI.
 
 ### Future Phases (Not MVP)
-- Calendar view in dashboard
-- Analytics dashboard with charts
-- X (Twitter) agent and publisher
-- Blog agent and publisher
+- X (Twitter) platform support
+- Blog content support
 - Multi-business support (second business onboarding)
 - Token cost tracking and budgets
 - A/B testing framework for hooks/CTAs
+- Image generation integration (DALL-E / Midjourney via skill)
 - **Paid ad optimization system** — separate application sharing Postgres + brand context (see `spec-ad.md`)
 
-### Bridge: Promote Top Performers (Organic → Paid)
+### Bridge: Organic → Paid
 
-When the analytics-collector identifies an organic post significantly outperforming its peers, the system flags it as a paid boost candidate. This is the integration point between the organic content system and a future paid ad optimization engine.
+When analytics-collector detects a post with engagement_rate > 2x business average, it:
+1. Sets `boost_candidate = true` on the content item
+2. Sends a Telegram notification with the post details
+3. Ben decides manually whether to boost via the platform's native ad tools
 
-**Implementation (add to analytics-collector skill):**
-
-1. After collecting weekly analytics, compare each post's engagement rate to the business average
-2. If `engagement_rate > 2x business_average`, set a `boost_candidate` flag in `content_items.metadata`
-3. Send a Telegram notification:
-
-```
-🚀 NelsonAI — Boost candidate detected
-━━━━━━━━━━━━━━━━━━━━━
-Post: {headline} ({platform})
-Engagement: {engagement_rate}% (2.3x avg)
-━━━━━━━━━━━━━━━━━━━━━
-📋 Dashboard: {dashboard_url}/items/{content_item_id}
-```
-
-4. Ben decides manually whether to boost via the platform's native ad tools (or via the ad optimization system when built)
-
-**Data model addition** (add to `content_items` when ready):
-
-```sql
-ALTER TABLE content_items ADD COLUMN boost_candidate BOOLEAN DEFAULT false;
-ALTER TABLE content_items ADD COLUMN boost_reason TEXT;
-```
-
-**Why this matters:** This creates a data-driven bridge between organic and paid without requiring any ad platform integrations. The organic system generates proven creative; the paid system (when built) amplifies it. The shared `analytics_snapshots` table and `brand_profiles` are the integration layer between the two systems.
+This creates a data-driven bridge between organic content and paid amplification without requiring any ad platform integrations in this system.
 
 ---
 
-## 13. Appendix: API Reference Notes
+## 13. Appendix
 
-### LinkedIn Posts API
-- **Docs:** https://learn.microsoft.com/en-us/linkedin/marketing/community-management/shares/posts-api
-- **Endpoint:** `POST https://api.linkedin.com/rest/posts`
-- **Draft support:** Set `lifecycleState: "DRAFT"`
-- **Auth:** OAuth 2.0, scope `w_organization_social`
-- **Headers:** `X-Restli-Protocol-Version: 2.0.0`, `LinkedIn-Version: 202501`
-- **Rate limit:** 100 calls/day per member
-- **Note:** Posts API replaces legacy ugcPosts API
+### API Reference Notes
 
-### Facebook Graph API (Pages)
-- **Docs:** https://developers.facebook.com/docs/pages-api/posts/
-- **Endpoint:** `POST https://graph.facebook.com/v19.0/{page-id}/feed`
-- **Draft support:** Set `published: false`
-- **Auth:** Page Access Token with `pages_manage_posts` permission
-- **Rate limit:** 200 calls/hour per page
+**LinkedIn Analytics API:**
+- Endpoint: `GET /organizationalEntityShareStatistics`
+- Auth: OAuth 2.0, scope `r_organization_social`
+- Returns: impressions, clicks, likes, comments, shares
 
-### Telegram Bot API
-- **Docs:** https://core.telegram.org/bots/api
-- **Send message:** `POST https://api.telegram.org/bot{token}/sendMessage`
-- **Inline keyboard:** Include `reply_markup` with `inline_keyboard` array
-- **Webhooks:** Set via `setWebhook` for callback button handling
+**Facebook Insights API:**
+- Endpoint: `GET /{page-id}/insights`
+- Auth: Page Access Token, `read_insights` permission
+- Returns: impressions, reach, engagement, clicks
 
-### OpenClaw Gateway WebSocket
-- **Protocol:** v3 JSON
-- **Default port:** 18789
-- **Reference:** https://github.com/actionagentai/openclaw-dashboard
-- **Client implementation:** Already provided by fork in `lib/gateway-client.ts` — do not rewrite
-- **Types:** Already provided by fork in `lib/types.ts` — 80+ RPC methods, 17 event types
-- **Key events for marketing ops:** `session.message`, `session.spawn`, `session.complete`, `heartbeat.result`, `cron.triggered`
+**Telegram Bot API:**
+- Send message: `POST https://api.telegram.org/bot{token}/sendMessage`
+- Inline keyboard: Include `reply_markup` with `inline_keyboard`
+- Docs: https://core.telegram.org/bots/api
+
+**OpenClaw Gateway WebSocket:**
+- Client/runtime details should be taken from the forked `gateway-client.ts` and generated types, not hard-coded from this document
+- Use the fork as the protocol source of truth when implementing activity feeds or realtime UI
 
 ### Brand Profile Template
 
-Use this template for every new business:
+Use this for every new business:
 
 ```markdown
 # {Business Name} — Brand Profile
@@ -2060,7 +1434,7 @@ Use this template for every new business:
 
 ## Tone & Voice
 - **Overall:** {e.g., "Professional but accessible. No jargon unless it adds clarity."}
-- **LinkedIn:** {e.g., "Authority-driven. Data-backed. Thought leadership."}
+- **LinkedIn:** {e.g., "Authority-driven. Thought leadership. Peer-to-peer."}
 - **Facebook:** {e.g., "Conversational. Community-building. Practical tips."}
 
 ## Approved Claims
@@ -2074,29 +1448,24 @@ Use this template for every new business:
 - Never guarantee {outcomes}
 
 ## Offers
-{What the business sells and how it's framed}
 ### Primary Offer
 - **Name:** {offer name}
 - **Description:** {what it is}
 - **CTA:** {default call to action}
-- **Price:** {if public}
 
 ## CTA Preferences
-- **LinkedIn:** {preferred CTA style, e.g., "Book a call", "DM me"}
-- **Facebook:** {preferred CTA style, e.g., "Download the guide", "Comment below"}
+- **LinkedIn:** {preferred CTA style}
+- **Facebook:** {preferred CTA style}
 
 ## Content Examples
 ### Good Examples
-{Paste 2-3 examples of posts that represent the ideal tone and quality}
+{2-3 examples of ideal posts}
 
 ### Bad Examples
-{Paste 1-2 examples of posts to avoid, with notes on why}
+{1-2 examples to avoid, with notes on why}
 
 ## Competitors
 {List of competitors, positioning differences}
-
-## Local Context
-{Any geographic, cultural, or market-specific context}
 ```
 
 ---
