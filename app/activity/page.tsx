@@ -1,4 +1,4 @@
-import { ActivityFeed } from "@/components/marketing/activity-feed";
+import { ActivityStream } from "@/components/marketing/activity-stream";
 import { PageIntro } from "@/components/marketing/page-intro";
 import { getActivityEvents } from "@/lib/marketing-data";
 
@@ -15,9 +15,9 @@ export default async function ActivityPage({
       <PageIntro
         eyebrow="Gateway Events"
         title="Agent activity"
-        description="Recent activity from audit events and workflow actions. OpenClaw event streaming can layer on top of this without changing the page contract."
+        description="Recent audit history is shown immediately, and live OpenClaw gateway events stream in when the gateway is connected."
       />
-      <ActivityFeed events={events.data} />
+      <ActivityStream initialEvents={events.data} />
     </div>
   );
 }

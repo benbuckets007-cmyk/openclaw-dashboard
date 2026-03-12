@@ -8,9 +8,29 @@ const iconMap = {
   review: SearchCheck,
   complete: CheckCheck,
   alert: Siren,
-};
+} as const;
 
-export function ActivityFeed({ events }: { events: ActivityEvent[] }) {
+function getStatusStyles(tone: "success" | "neutral" | "danger") {
+  if (tone === "success") {
+    return { background: "rgba(35, 116, 74, 0.14)", color: "#23744a" };
+  }
+
+  if (tone === "danger") {
+    return { background: "rgba(168, 63, 53, 0.12)", color: "var(--danger)" };
+  }
+
+  return { background: "rgba(16, 37, 42, 0.08)", color: "var(--text-secondary)" };
+}
+
+export function ActivityFeed({
+  events,
+  statusLabel = "Audit",
+  statusTone = "neutral",
+}: {
+  events: ActivityEvent[];
+  statusLabel?: string;
+  statusTone?: "success" | "neutral" | "danger";
+}) {
   return (
     <div className="surface rounded-[1.75rem] p-5">
       <div className="mb-6 flex items-center justify-between">
@@ -18,8 +38,11 @@ export function ActivityFeed({ events }: { events: ActivityEvent[] }) {
           <p className="eyebrow">Live Feed</p>
           <h2 className="mt-2 font-display text-2xl font-semibold">Agent activity</h2>
         </div>
-        <div className="rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em]" style={{ background: "rgba(168, 63, 53, 0.12)", color: "var(--danger)" }}>
-          Live
+        <div
+          className="rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em]"
+          style={getStatusStyles(statusTone)}
+        >
+          {statusLabel}
         </div>
       </div>
       <div className="space-y-4">
