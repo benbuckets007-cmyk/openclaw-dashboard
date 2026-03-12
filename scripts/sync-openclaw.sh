@@ -22,6 +22,12 @@ copy_tree() {
 copy_tree "$SOURCE_DIR/workspaces/marketing-ops" "$TARGET_ROOT/workspaces/marketing-ops"
 mkdir -p "$TARGET_ROOT/agents/orchestrator/agent"
 
+WORKSPACE_TARGET="$TARGET_ROOT/workspaces/marketing-ops"
+if [[ -d "$REPO_ROOT/node_modules" ]]; then
+  ln -sfn "$REPO_ROOT/node_modules" "$WORKSPACE_TARGET/node_modules"
+  echo "Linked workspace node_modules -> $REPO_ROOT/node_modules"
+fi
+
 if [[ ! -f "$TARGET_ROOT/config.json5" ]]; then
   cp "$SOURCE_DIR/config/marketing-ops.config.json5" "$TARGET_ROOT/config.json5"
   echo "Installed config template to $TARGET_ROOT/config.json5"
