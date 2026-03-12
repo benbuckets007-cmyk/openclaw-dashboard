@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma, isDatabaseConfigured } from "@/lib/db";
+import { isAuthorizedRequest, unauthorizedResponse } from "@/lib/auth";
 import { getBrandProfile } from "@/lib/marketing-data";
 
 export async function GET(
@@ -15,6 +16,10 @@ export async function PATCH(
   request: Request,
   { params }: { params: Promise<{ slug: string }> },
 ) {
+  if (!isAuthorizedRequest(request)) {
+    return unauthorizedResponse();
+  }
+
   if (!isDatabaseConfigured()) {
     return NextResponse.json({ error: "DATABASE_URL is not configured." }, { status: 503 });
   }
