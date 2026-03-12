@@ -13,9 +13,9 @@
 2. [Architecture](#2-architecture)
 3. [Data Model (Postgres)](#3-data-model-postgres)
 4. [OpenClaw Agent Configuration](#4-openclaw-agent-configuration)
-5. [Lobster Workflow Pipelines](#5-lobster-workflow-pipelines)
+5. [Execution Flows (OpenClaw-Aligned)](#5-execution-flows-openclaw-aligned)
 6. [Custom Skills (Platform Integrations)](#6-custom-skills-platform-integrations)
-7. [Heartbeat Configuration](#7-heartbeat-configuration)
+7. [Heartbeat and Cron Configuration](#7-heartbeat-and-cron-configuration)
 8. [Next.js Dashboard](#8-nextjs-dashboard)
 9. [Telegram Notification System](#9-telegram-notification-system)
 10. [File/Directory Structure](#10-filedirectory-structure)
@@ -87,7 +87,7 @@ A multi-business AI marketing operations system where:
 │  ├── Reads content state from Postgres                       │
 │  ├── Decides next action for each content item               │
 │  ├── Spawns sub-agent tasks (Content Writer, Reviewer)       │
-│  ├── Invokes Lobster pipelines for multi-step execution      │
+│  ├── Orchestrates multi-step work via agent turns + scripts  │
 │  └── Triggers notifications via telegram-notifier skill      │
 │                                                              │
 │  Content Writer (sub-agent, spawned per-task)                │
@@ -105,10 +105,10 @@ A multi-business AI marketing operations system where:
 ┌──────────────────────▼──────────────────────────────────────┐
 │               EXECUTION LAYER (Deterministic)                │
 │                                                              │
-│  Lobster Pipelines:                                          │
-│  ├── content-lifecycle.yaml                                  │
+│  Orchestration Jobs / Scripts:                               │
+│  ├── content-lifecycle.js                                    │
 │  │   (brief → draft → review → approve → publish → notify)  │
-│  └── weekly-planning.yaml                                    │
+│  └── weekly-planning.js                                      │
 │      (analytics summary → themes → briefs → job creation)    │
 │                                                              │
 │  Custom Skills:                                              │
@@ -153,7 +153,7 @@ A multi-business AI marketing operations system where:
 |----------|--------|-----------|
 | System of record | Postgres | Queryable, transactional, dashboard-friendly. Markdown is for config/prompts only |
 | Number of LLM agents | 3 (Orchestrator, Writer, Reviewer) | Minimize handoff complexity and token burn. Everything else is deterministic |
-| Workflow engine | Lobster (OpenClaw native) | YAML pipelines with typed data passing and approval gates. Avoids agent re-planning |
+| Workflow engine | App/worker orchestration + OpenClaw agent turns | Keep durable state and approvals in Postgres/API routes; use OpenClaw for judgment-heavy turns, heartbeats, cron, and notifications |
 | Dashboard framework | Fork of openclaw-dashboard (Next.js 16, App Router) | Gets gateway WebSocket client, typed RPC, React hooks for free. Add Postgres + marketing pages on top |
 | Model strategy | High-reasoning for Orchestrator + Reviewer; standard for Writer | Quality where judgment matters, cost savings where generation suffices |
 | Publishing model | Draft-only, never autonomous | Safety. Ben reviews and posts manually |
@@ -547,7 +547,10 @@ Three LLM-powered agents, all running under a single OpenClaw Gateway instance. 
           prompt: "Check HEARTBEAT.md and run your scheduled checks."
         },
         tools: {
-          allow: ["read", "write", "exec", "skills", "sessions_spawn", "subagents"],
+          // Final allow/deny should be validated against the installed OpenClaw version.
+          // At minimum this agent needs file access, process execution for repo scripts,
+          // and session spawning for sub-agents.
+          allow: ["read", "write", "edit", "exec", "process", "sessions_spawn", "session_status"],
           deny: ["gateway"]
         }
       }
@@ -740,145 +743,94 @@ Return a JSON object:
 
 ---
 
-## 5. Lobster Workflow Pipelines
+## 5. Execution Flows (OpenClaw-Aligned)
 
-### Content Lifecycle Pipeline
+OpenClaw is the orchestration/runtime layer, but the durable workflow state lives in Postgres and the dashboard's API layer.
 
-File: `~/.openclaw/workspaces/marketing-ops/skills/workflows/content-lifecycle.yaml`
+**Important implementation note:** this design does **not** assume a special built-in `openclaw.invoke` workflow DSL or a native Lobster runtime inside OpenClaw. Instead, long-running flows are modeled as:
 
-```yaml
-name: content-lifecycle
-description: Move a content item from briefed through to platform draft and notification
-args:
-  content_item_id:
-    required: true
-    description: UUID of the content item to process
-  business_id:
-    required: true
-  platform:
-    required: true
-    description: linkedin | facebook
-  max_revisions:
-    default: 2
+- Postgres records and state transitions
+- dashboard/API endpoints for deterministic writes
+- OpenClaw heartbeats + cron for scheduled triggers
+- `sessions_spawn` for specialist sub-agent work
+- repo-shipped skills/scripts for deterministic side effects (publishing drafts, analytics, notifications)
 
-steps:
-  - id: load-context
-    command: >
-      openclaw.invoke --tool db-state-manager --action read
-      --args-json '{"table": "content_items", "id": "$LOBSTER_ARG_CONTENT_ITEM_ID"}'
+### 5.1 Content Lifecycle Flow
 
-  - id: build-brand-context
-    command: >
-      openclaw.invoke --tool brand-context-builder
-      --args-json '{"business_id": "$LOBSTER_ARG_BUSINESS_ID"}'
+A content item moves through the lifecycle via explicit orchestration steps:
 
-  - id: generate-draft
-    command: >
-      openclaw.invoke --tool sessions_spawn --action spawn
-      --args-json '{
-        "task": "content-writer",
-        "model": "anthropic/claude-sonnet-4-20250514",
-        "context": {
-          "brief": "$load-context.stdout.brief",
-          "brand_context": "$build-brand-context.stdout",
-          "platform": "$LOBSTER_ARG_PLATFORM"
-        }
-      }'
+1. **Planner creates item**
+   - Dashboard/API or weekly planning job inserts a `content_item` in `planned` or `briefed` state.
 
-  - id: save-draft
-    command: >
-      openclaw.invoke --tool db-state-manager --action create-version
-      --args-json '{"content_item_id": "$LOBSTER_ARG_CONTENT_ITEM_ID"}'
-    stdin: $generate-draft.stdout
+2. **Orchestrator detects work**
+   - On heartbeat, cron, or manual prompt, the Orchestrator queries for items needing action.
+   - For `briefed` items, it transitions the item to `drafting` and spawns a Content Writer sub-agent via `sessions_spawn`.
 
-  - id: review-draft
-    command: >
-      openclaw.invoke --tool sessions_spawn --action spawn
-      --args-json '{
-        "task": "reviewer",
-        "model": "anthropic/claude-sonnet-4-20250514",
-        "context": {
-          "draft": "$generate-draft.stdout",
-          "brand_context": "$build-brand-context.stdout"
-        }
-      }'
+3. **Content Writer returns structured output**
+   - The Writer is given the brief, brand context pack, and platform rules.
+   - Its final response must be valid JSON matching the expected draft schema.
 
-  - id: save-review
-    command: >
-      openclaw.invoke --tool db-state-manager --action save-review
-      --args-json '{"content_item_id": "$LOBSTER_ARG_CONTENT_ITEM_ID"}'
-    stdin: $review-draft.stdout
+4. **Deterministic save**
+   - A deterministic app function / repo script saves the returned draft as a new `content_version`, updates `current_version_id`, and transitions the item to `draft_ready`.
 
-  - id: check-approval
-    command: >
-      echo "$review-draft.stdout" | jq -r '.outcome'
-    # Branches based on review outcome
+5. **Review pass**
+   - The Orchestrator spawns a Reviewer sub-agent for `draft_ready` items.
+   - The Reviewer returns structured JSON (`pass` / `revise`, notes, risk flags, confidence).
 
-  - id: publish-draft
-    command: >
-      openclaw.invoke --tool ${LOBSTER_ARG_PLATFORM}-publisher --action create-draft
-      --args-json '{"content_item_id": "$LOBSTER_ARG_CONTENT_ITEM_ID"}'
-    condition: $check-approval.stdout == "pass"
-    approval: required
+6. **Review write-back**
+   - Deterministic code writes a `review_record`.
+   - If the outcome is `revise`, the item transitions to `revision_required` and later back to `drafting`.
+   - If the outcome is `pass`, the item transitions to `approved`.
 
-  - id: notify-ben
-    command: >
-      openclaw.invoke --tool telegram-notifier --action send
-      --args-json '{
-        "event_type": "draft_ready",
-        "content_item_id": "$LOBSTER_ARG_CONTENT_ITEM_ID"
-      }'
-    condition: $publish-draft.exitCode == 0
-```
+7. **Draft creation on platform**
+   - Deterministic publisher code reads the approved version, resolves provider credentials, and creates a **draft/unpublished** post on the target platform.
+   - On success, write `platform_publications`, `platform_draft_id`, and `platform_draft_url`, then transition to `draft_on_platform`.
 
-### Weekly Planning Pipeline
+8. **Notify Ben**
+   - A deterministic notifier sends Telegram (or future dashboard/in-app) notifications with links to the draft and item detail page.
 
-File: `~/.openclaw/workspaces/marketing-ops/skills/workflows/weekly-planning.yaml`
+### 5.2 Weekly Planning Flow
 
-```yaml
-name: weekly-planning
-description: Generate content plan for the upcoming week
-args:
-  business_id:
-    required: true
+Weekly planning is also orchestrated through normal OpenClaw primitives rather than a special workflow DSL:
 
-steps:
-  - id: collect-analytics
-    command: >
-      openclaw.invoke --tool analytics-collector --action weekly-summary
-      --args-json '{"business_id": "$LOBSTER_ARG_BUSINESS_ID"}'
+1. Cron fires on schedule (or Ben triggers it manually from the dashboard).
+2. Deterministic analytics code gathers the latest metrics for each business/platform.
+3. The Orchestrator (or a planning sub-agent) receives a compact analytics summary + brand context.
+4. The planning turn returns a structured list of proposed briefs.
+5. Deterministic code inserts those briefs into `content_items`.
+6. Ben is notified that the weekly plan is ready for review.
 
-  - id: load-brand
-    command: >
-      openclaw.invoke --tool brand-context-builder
-      --args-json '{"business_id": "$LOBSTER_ARG_BUSINESS_ID"}'
+### 5.3 Recommended Runtime Split
 
-  - id: generate-plan
-    command: >
-      openclaw.invoke --tool sessions_spawn --action spawn
-      --args-json '{
-        "task": "strategy-planning",
-        "context": {
-          "analytics": "$collect-analytics.stdout",
-          "brand_context": "$load-brand.stdout",
-          "current_week": "auto"
-        }
-      }'
+Use each layer for what it is good at:
 
-  - id: create-content-items
-    command: >
-      openclaw.invoke --tool db-state-manager --action bulk-create-items
-    stdin: $generate-plan.stdout
-    approval: required
+- **Dashboard/API layer**
+  - Interactive OAuth
+  - Account selection
+  - Secure token storage
+  - Deterministic DB writes and admin actions
 
-  - id: notify-plan-ready
-    command: >
-      openclaw.invoke --tool telegram-notifier --action send
-      --args-json '{
-        "event_type": "weekly_plan_ready",
-        "business_id": "$LOBSTER_ARG_BUSINESS_ID"
-      }'
-```
+- **OpenClaw agent layer**
+  - Deciding what needs attention
+  - Spawning Writer/Reviewer sub-agents
+  - Heartbeat checks
+  - Cron-triggered planning / follow-up
+  - Human-facing operational summaries
+
+- **Deterministic skills/scripts**
+  - Brand context parsing
+  - Draft creation on LinkedIn/Facebook
+  - Analytics collection
+  - Telegram notification delivery
+
+### 5.4 Approval and Idempotency Rules
+
+Because the state machine is in Postgres, every orchestration step should be safe to re-run:
+
+- Publishing code should refuse to create a new draft if `platform_draft_id` already exists unless an explicit overwrite path is requested.
+- Review write-back should use version IDs so results are attached to the correct draft.
+- Planner insertion should dedupe on `business + platform + scheduled_date + campaign_theme` (or an equivalent idempotency key) to avoid duplicate weekly briefs.
+- Any retryable failure should log to `audit_events` and `platform_publications` rather than silently looping.
 
 ---
 
@@ -1278,7 +1230,7 @@ This skill is the only way agents interact with the database. No agent has direc
 
 ---
 
-## 7. Heartbeat Configuration
+## 7. Heartbeat and Cron Configuration
 
 ### Orchestrator Heartbeat
 
@@ -1298,26 +1250,17 @@ heartbeat: {
 }
 ```
 
-### Cron Jobs (for non-heartbeat scheduled work)
+### Cron Jobs (managed by Gateway scheduler)
 
-```json5
-// In gateway config:
-cron: {
-    jobs: [
-        {
-            id: "weekly-planning",
-            schedule: "0 9 * * 1",  // Monday 9am local
-            agent: "orchestrator",
-            task: "Run the weekly-planning workflow for all active businesses."
-        },
-        {
-            id: "weekly-analytics",
-            schedule: "0 8 * * 1",  // Monday 8am local (before planning)
-            agent: "orchestrator",
-            task: "Run analytics collection for all active businesses for the past week."
-        }
-    ]
-}
+```text
+Use the Gateway cron scheduler to create isolated agent-turn jobs (recommended) or system events, for example:
+
+- Monday 08:00 local: "Collect analytics for all active businesses and summarize anything notable."
+- Monday 09:00 local: "Generate the weekly content plan for all active businesses using the latest analytics and brand context."
+
+In implementation, create these with Gateway cron jobs rather than relying on a static pseudo-schema in `config.json5`. Each job should either:
+- run an isolated `agentTurn` with an explicit prompt, or
+- enqueue a `systemEvent` that wakes the orchestrator on its next heartbeat.
 ```
 
 ---
@@ -1628,20 +1571,11 @@ hooks/use-openclaw-gateway.ts   # Connection state hook
 contexts/OpenClawContext.tsx     # Shared connection provider
 ```
 
-**Connection flow (already implemented):**
-1. Client connects to gateway WebSocket (default: `ws://localhost:18789`)
-2. Server sends `connect.challenge` with nonce
-3. Client responds with authenticated `connect` request
-4. Server sends `hello-ok` with features, snapshot, and policy
-5. Typed RPC calls via `rpc(method, params)` pattern
-6. Event subscriptions for `chat`, `agent`, `health`, `presence`
+**Connection flow (already implemented by the fork):**
+The fork already handles the gateway handshake, session bootstrap, reconnects, and typed RPC/event plumbing. Treat `lib/gateway-client.ts` as the source of truth for protocol details rather than re-documenting the wire sequence in this spec.
 
-**Events relevant to marketing ops (subscribe in the Activity Feed page):**
-- `session.message` — agent sent a message (log to activity feed)
-- `session.spawn` — sub-agent spawned (show "Content Writer started for...")
-- `session.complete` — sub-agent finished (show "Draft completed" or "Review: PASS")
-- `heartbeat.result` — heartbeat check result (show "Heartbeat OK" or alerts)
-- `cron.triggered` — scheduled job fired (show "Weekly planning started")
+**Events relevant to marketing ops:**
+Use the fork's typed gateway events to surface session activity, completions, heartbeat outcomes, and cron/job activity. The exact event names and payloads should be taken from the fork's generated types, not hard-coded from this document.
 
 **Usage in custom marketing pages:**
 
@@ -1760,9 +1694,9 @@ The `mark_posted` callback triggers a state transition in Postgres via a webhook
 │           ├── db-state-manager/
 │           │   ├── SKILL.md
 │           │   └── index.js
-│           └── workflows/
-│               ├── content-lifecycle.yaml
-│               └── weekly-planning.yaml
+│           └── jobs/
+│               ├── content-lifecycle.js
+│               └── weekly-planning.js
 │
 ├── agents/
 │   └── orchestrator/
@@ -1878,12 +1812,20 @@ Dashboard-OpenClaw/                      # Forked from github.com/actionagentai/
 | Reviewer | Review drafts, produce verdicts | Modify drafts, publish, access platform APIs |
 | linkedin-publisher | Create drafts on LinkedIn, update DB state | Publish live (lifecycleState always = DRAFT) |
 | facebook-publisher | Create unpublished posts on Facebook, update DB state | Set published=true |
-| analytics-collector | Read-only access to platform analytics APIs | Modify content, trigger workflows |
+| analytics-collector | Read-only access to platform analytics APIs | Modify content state directly beyond analytics write-back |
 | Ben (dashboard) | All actions, manual state transitions, final publishing authority | N/A |
 
 ### API Key Management
 
-All sensitive credentials stored as environment variables, never in config files:
+Interactive OAuth is handled in the dashboard/app layer. OpenClaw skills consume already-resolved provider credentials and do not perform browser OAuth themselves.
+
+Credential source precedence for LinkedIn/Facebook:
+
+1. Default active connected account in Postgres for `business + provider`
+2. App environment fallback bound to `FALLBACK_CREDENTIAL_BUSINESS_SLUG`
+3. Local OpenClaw credential file fallback under `~/.openclaw/credentials/marketing-ops/<provider>.json`
+
+Fallback credentials may still be local-only, but config templates remain secret-free:
 
 ```bash
 # Platform APIs
@@ -1957,19 +1899,19 @@ ADMIN_SECRET=  # Simple auth for single-user MVP
 
 **Deliverable:** Can go from a content brief to a LinkedIn draft post.
 
-### Phase 3: Lobster Pipelines + Notifications (Days 8-12)
-**Goal:** Deterministic workflow execution and Telegram alerts.
+### Phase 3: Orchestration + Notifications (Days 8-12)
+**Goal:** Deterministic orchestration and Telegram alerts.
 
-- [ ] Install Lobster
-- [ ] Write `content-lifecycle.yaml` pipeline
-- [ ] Write `weekly-planning.yaml` pipeline
+- [ ] Implement deterministic orchestration helpers / scripts for content lifecycle transitions
+- [ ] Implement weekly planning job prompt + write-back path
+- [ ] Add idempotency and retry handling for background runs
 - [ ] Build `telegram-notifier` skill
 - [ ] Configure inline keyboard buttons for Telegram
 - [ ] Set up heartbeat configuration
 - [ ] Configure cron jobs (weekly planning, weekly analytics)
 - [ ] Test: full pipeline from brief to Telegram notification
 
-**Deliverable:** Content moves through pipeline automatically, Ben gets notified.
+**Deliverable:** Content moves through the Postgres-backed lifecycle automatically, and Ben gets notified.
 
 ### Phase 4: Dashboard MVP (Days 12-18)
 **Goal:** Web UI for pipeline management and approvals.
