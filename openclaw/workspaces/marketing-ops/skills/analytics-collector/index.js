@@ -81,17 +81,26 @@ async function main() {
     }
 
     const businessId = args['business-id'] || null;
+    const contentItemId = args['content-item-id'] || null;
+    const snapshotDate = args['snapshot-date'] || new Date().toISOString().slice(0, 10);
+    const transitionState = String(args['transition-state'] || 'true') !== 'false';
+    const platformPostOverride = args['platform-post-id'] || null;
     const filters = [];
     const values = [];
     if (businessId) {
       values.push(businessId);
       filters.push(`business_id = $${values.length}`);
     }
-    filters.push(`state = 'posted'`);
-    filters.push(`platform_post_id IS NOT NULL`);
+    if (contentItemId) {
+      values.push(contentItemId);
+      filters.push(`id = $${values.length}`);
+    } else {
+      filters.push(`state = 'posted'`);
+    }
+    filters.push(`COALESCE(platform_post_id, platform_draft_id) IS NOT NULL`);
 
     const { rows: items } = await pool.query(
-      `SELECT id, business_id, platform, platform_post_id, campaign_theme
+      `SELECT id, business_id, platform, COALESCE(platform_post_id, platform_draft_id) AS platform_post_id, campaign_theme, state
          FROM content_items
         WHERE ${filters.join(' AND ')}`,
       values,
@@ -100,11 +109,14 @@ async function main() {
     const snapshots = [];
     for (const item of items) {
       try {
-        const metrics = await snapshotForItem(item);
+        const metrics = await snapshotForItem({
+          ...item,
+          platform_post_id: platformPostOverride || item.platform_post_id,
+        });
         const { rows } = await pool.query(
           `INSERT INTO analytics_snapshots (
             content_item_id, business_id, platform, snapshot_date, impressions, clicks, likes, comments, shares, reach, raw_data
-          ) VALUES ($1,$2,$3,CURRENT_DATE,$4,$5,$6,$7,$8,$9,$10::jsonb)
+          ) VALUES ($1,$2,$3,$4::date,$5,$6,$7,$8,$9,$10,$11::jsonb)
           ON CONFLICT (content_item_id, snapshot_date)
           DO UPDATE SET impressions = EXCLUDED.impressions,
                         clicks = EXCLUDED.clicks,
@@ -114,20 +126,33 @@ async function main() {
                         reach = EXCLUDED.reach,
                         raw_data = EXCLUDED.raw_data
           RETURNING *`,
-          [item.id, item.business_id, item.platform, metrics.impressions, metrics.clicks, metrics.likes, metrics.comments, metrics.shares, metrics.reach, JSON.stringify(metrics.raw)],
+          [item.id, item.business_id, item.platform, snapshotDate, metrics.impressions, metrics.clicks, metrics.likes, metrics.comments, metrics.shares, metrics.reach, JSON.stringify(metrics.raw)],
         );
-        await pool.query(
-          `UPDATE content_items SET state = 'analyzed', analyzed_at = now(), updated_at = now() WHERE id = $1`,
-          [item.id],
-        );
+        const nextState = transitionState && item.state === 'posted' ? 'analyzed' : item.state;
+
+        if (transitionState && item.state === 'posted') {
+          await pool.query(
+            `UPDATE content_items SET state = 'analyzed', analyzed_at = now(), updated_at = now() WHERE id = $1`,
+            [item.id],
+          );
+        }
         await pool.query(
           `INSERT INTO audit_events (business_id, content_item_id, actor, action, from_state, to_state, details)
-           VALUES ($1, $2, 'analytics-collector', 'analytics_collected', 'posted', 'analyzed', $3::jsonb)`,
-          [item.business_id, item.id, JSON.stringify({ platform: item.platform })],
+           VALUES ($1, $2, 'analytics-collector', 'analytics_collected', $3, $4, $5::jsonb)`,
+          [item.business_id, item.id, item.state, nextState, JSON.stringify({ platform: item.platform })],
         );
         snapshots.push(rows[0]);
       } catch (error) {
         snapshots.push({ item_id: item.id, error: error.message, platform: item.platform });
+      }
+    }
+
+    if (contentItemId) {
+      if (!snapshots.length) {
+        throw new Error(`No eligible analytics target found for content item: ${contentItemId}`);
+      }
+      if (snapshots[0] && snapshots[0].error) {
+        throw new Error(snapshots[0].error);
       }
     }
 
