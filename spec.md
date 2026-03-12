@@ -2027,6 +2027,37 @@ ADMIN_SECRET=  # Simple auth for single-user MVP
 - Multi-business support (second business onboarding)
 - Token cost tracking and budgets
 - A/B testing framework for hooks/CTAs
+- **Paid ad optimization system** — separate application sharing Postgres + brand context (see `spec-ad.md`)
+
+### Bridge: Promote Top Performers (Organic → Paid)
+
+When the analytics-collector identifies an organic post significantly outperforming its peers, the system flags it as a paid boost candidate. This is the integration point between the organic content system and a future paid ad optimization engine.
+
+**Implementation (add to analytics-collector skill):**
+
+1. After collecting weekly analytics, compare each post's engagement rate to the business average
+2. If `engagement_rate > 2x business_average`, set a `boost_candidate` flag in `content_items.metadata`
+3. Send a Telegram notification:
+
+```
+🚀 NelsonAI — Boost candidate detected
+━━━━━━━━━━━━━━━━━━━━━
+Post: {headline} ({platform})
+Engagement: {engagement_rate}% (2.3x avg)
+━━━━━━━━━━━━━━━━━━━━━
+📋 Dashboard: {dashboard_url}/items/{content_item_id}
+```
+
+4. Ben decides manually whether to boost via the platform's native ad tools (or via the ad optimization system when built)
+
+**Data model addition** (add to `content_items` when ready):
+
+```sql
+ALTER TABLE content_items ADD COLUMN boost_candidate BOOLEAN DEFAULT false;
+ALTER TABLE content_items ADD COLUMN boost_reason TEXT;
+```
+
+**Why this matters:** This creates a data-driven bridge between organic and paid without requiring any ad platform integrations. The organic system generates proven creative; the paid system (when built) amplifies it. The shared `analytics_snapshots` table and `brand_profiles` are the integration layer between the two systems.
 
 ---
 
