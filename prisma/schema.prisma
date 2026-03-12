@@ -132,6 +132,8 @@ model ContentItem {
   platformDraftUrl  String?               @map("platform_draft_url")
   platformPostId    String?               @map("platform_post_id")
   platformPostUrl   String?               @map("platform_post_url")
+  boostCandidate    Boolean               @default(false) @map("boost_candidate")
+  boostReason       String?               @map("boost_reason")
   briefedAt         DateTime?             @map("briefed_at") @db.Timestamptz(6)
   firstDraftAt      DateTime?             @map("first_draft_at") @db.Timestamptz(6)
   approvedAt        DateTime?             @map("approved_at") @db.Timestamptz(6)

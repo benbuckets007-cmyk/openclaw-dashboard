@@ -36,7 +36,7 @@ export default async function ItemDetailPage({
       <PageIntro
         eyebrow={`${item.platform} · ${item.currentVersion.label}`}
         title={item.title}
-        description={item.brief}
+        description={item.boostCandidate && item.boostReason ? `${item.brief} · ${item.boostReason}` : item.brief}
         aside={
           <span
             className="rounded-full px-4 py-2 text-sm font-semibold uppercase tracking-[0.18em]"
@@ -112,6 +112,15 @@ export default async function ItemDetailPage({
               ))}
             </div>
           </div>
+
+          {item.boostCandidate ? (
+            <div className="mt-6 rounded-[1.5rem] border px-5 py-4" style={{ borderColor: "rgba(208, 103, 50, 0.25)", background: "rgba(208, 103, 50, 0.08)" }}>
+              <p className="eyebrow">Organic to paid bridge</p>
+              <p className="mt-2 text-sm leading-7" style={{ color: "var(--text-secondary)" }}>
+                Boost candidate flagged. {item.boostReason ?? "This post materially outperformed the business baseline."}
+              </p>
+            </div>
+          ) : null}
 
           <div className="mt-6">
             <p className="eyebrow">Versions</p>

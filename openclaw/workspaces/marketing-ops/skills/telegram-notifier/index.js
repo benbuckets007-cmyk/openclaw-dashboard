@@ -46,6 +46,9 @@ function renderMessage(eventType, payload) {
   if (eventType === 'stale_item_alert') {
     return `🔴 Stale items need attention\n━━━━━━━━━━━━━━━━━━━━━\n${payload.count || 0} items stuck for >24h\n${payload.item_list || ''}\n━━━━━━━━━━━━━━━━━━━━━\n📋 Dashboard: ${payload.dashboard_url || 'N/A'}`;
   }
+  if (eventType === 'boost_candidate') {
+    return `🚀 ${payload.business_name} — Boost candidate detected\n━━━━━━━━━━━━━━━━━━━━━\nPost: ${payload.headline || 'N/A'} (${payload.platform_label || 'Platform'})\nEngagement: ${payload.engagement_rate || 'N/A'} (${payload.multiplier || 'N/A'}x avg)\n━━━━━━━━━━━━━━━━━━━━━\n📋 Dashboard: ${payload.dashboard_url || 'N/A'}`;
+  }
   return `⚠️ ${payload.business_name || 'Marketing Ops'} — ${eventType}\n${payload.message || 'No details provided.'}`;
 }
 
@@ -107,6 +110,34 @@ async function loadPayload(pool, args, dashboardBaseUrl) {
       payload: {
         business_name: rows[0].name,
         dashboard_url: `${dashboardBaseUrl}/pipeline`,
+      },
+    };
+  }
+
+  if (eventType === 'boost_candidate') {
+    if (!contentItemId) throw new Error('boost_candidate requires --content-item-id or --payload');
+    const { rows } = await pool.query(
+      `SELECT ci.id, ci.platform, ci.business_id, b.name AS business_name, cv.headline
+         FROM content_items ci
+         JOIN businesses b ON b.id = ci.business_id
+         LEFT JOIN content_versions cv ON cv.id = ci.current_version_id
+        WHERE ci.id = $1
+        LIMIT 1`,
+      [contentItemId],
+    );
+    const row = rows[0];
+    if (!row) throw new Error(`Content item not found: ${contentItemId}`);
+    return {
+      eventType,
+      contentItemId,
+      businessId: row.business_id,
+      payload: {
+        business_name: row.business_name,
+        platform_label: row.platform[0].toUpperCase() + row.platform.slice(1),
+        headline: row.headline,
+        engagement_rate: 'N/A',
+        multiplier: 'N/A',
+        dashboard_url: `${dashboardBaseUrl}/items/${contentItemId}`,
       },
     };
   }

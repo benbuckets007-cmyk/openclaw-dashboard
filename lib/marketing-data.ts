@@ -152,6 +152,7 @@ function mapReview(review: DbContentItem["reviewRecords"][number]) {
 }
 
 function mapContentItem(item: DbContentItem, businessSlug?: string): ContentItem {
+  const boostInfo = item as DbContentItem & { boostCandidate?: boolean | null; boostReason?: string | null };
   const latestReview = item.reviewRecords[0];
   const imageCandidates: ImageCandidate[] = item.assetMatches.map((match) => ({
     id: match.asset.id,
@@ -190,6 +191,8 @@ function mapContentItem(item: DbContentItem, businessSlug?: string): ContentItem
     draftUrl: item.platformDraftUrl ?? undefined,
     platformUrl: item.platformDraftUrl ?? undefined,
     platformPostUrl: item.platformPostUrl ?? undefined,
+    boostCandidate: boostInfo.boostCandidate ?? false,
+    boostReason: boostInfo.boostReason ?? undefined,
     reviewerNote: latestReview?.revisionNotes ?? undefined,
     currentVersion: {
       ...(item.currentVersion

@@ -97,6 +97,8 @@ export interface ContentItem {
   draftUrl?: string;
   platformUrl?: string;
   platformPostUrl?: string;
+  boostCandidate?: boolean;
+  boostReason?: string;
   reviewerNote?: string;
   currentVersion: VersionRecord;
   selectedAsset?: ImageCandidate;
