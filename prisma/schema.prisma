@@ -1,0 +1,264 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum BusinessStatus {
+  active
+  paused
+  archived
+}
+
+enum AnalyticsCadence {
+  daily
+  weekly
+  biweekly
+}
+
+enum Platform {
+  linkedin
+  facebook
+  x
+  blog
+}
+
+enum ContentState {
+  planned
+  briefed
+  drafting
+  draft_ready
+  in_review
+  revision_required
+  approved
+  publishing_draft
+  draft_on_platform
+  notified
+  posted
+  analyzed
+  archived
+}
+
+enum Priority {
+  low
+  normal
+  high
+  urgent
+}
+
+enum ReviewOutcome {
+  pass
+  revise
+  reject
+}
+
+enum ReviewConfidence {
+  high
+  medium
+  low
+}
+
+enum PlatformAction {
+  draft_created
+  draft_updated
+  posted
+  deleted
+}
+
+model Business {
+  id                  String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name                String              @unique
+  slug                String              @unique
+  timezone            String              @default("America/New_York")
+  status              BusinessStatus      @default(active)
+  enabledPlatforms    Platform[]          @default([])
+  postingCadence      Json                @default("{}")
+  notificationChannel String              @default("telegram")
+  analyticsCadence    AnalyticsCadence    @default(weekly)
+  brandProfilePath    String?
+  config              Json                @default("{}")
+  createdAt           DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+  analyticsSnapshots  AnalyticsSnapshot[]
+  auditEvents         AuditEvent[]
+  brandProfiles       BrandProfile[]
+  contentItems        ContentItem[]
+  notificationEvents  NotificationEvent[]
+
+  @@map("businesses")
+}
+
+model BrandProfile {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  businessId  String   @map("business_id") @db.Uuid
+  version     Int      @default(1)
+  profile     Json
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  business    Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@index([businessId, isActive])
+  @@map("brand_profiles")
+}
+
+model ContentItem {
+  id                String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  businessId        String                @map("business_id") @db.Uuid
+  platform          Platform
+  state             ContentState          @default(planned)
+  campaignTheme     String?               @map("campaign_theme")
+  brief             Json?
+  scheduledDate     DateTime?             @map("scheduled_date") @db.Date
+  priority          Priority              @default(normal)
+  currentVersionId  String?               @map("current_version_id") @db.Uuid
+  platformDraftId   String?               @map("platform_draft_id")
+  platformDraftUrl  String?               @map("platform_draft_url")
+  platformPostId    String?               @map("platform_post_id")
+  platformPostUrl   String?               @map("platform_post_url")
+  briefedAt         DateTime?             @map("briefed_at") @db.Timestamptz(6)
+  firstDraftAt      DateTime?             @map("first_draft_at") @db.Timestamptz(6)
+  approvedAt        DateTime?             @map("approved_at") @db.Timestamptz(6)
+  publishedDraftAt  DateTime?             @map("published_draft_at") @db.Timestamptz(6)
+  postedAt          DateTime?             @map("posted_at") @db.Timestamptz(6)
+  analyzedAt        DateTime?             @map("analyzed_at") @db.Timestamptz(6)
+  createdAt         DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime              @updatedAt @map("updated_at") @db.Timestamptz(6)
+  analyticsSnapshots AnalyticsSnapshot[]
+  auditEvents       AuditEvent[]
+  business          Business              @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  currentVersion    ContentVersion?       @relation("CurrentVersion", fields: [currentVersionId], references: [id], onDelete: SetNull)
+  versions          ContentVersion[]      @relation("ItemVersions")
+  notificationEvents NotificationEvent[]
+  platformPublications PlatformPublication[]
+  reviewRecords     ReviewRecord[]
+
+  @@index([businessId, state], map: "idx_content_items_business_state")
+  @@index([platform], map: "idx_content_items_platform")
+  @@index([scheduledDate], map: "idx_content_items_scheduled")
+  @@map("content_items")
+}
+
+model ContentVersion {
+  id               String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  contentItemId    String         @map("content_item_id") @db.Uuid
+  versionNumber    Int            @map("version_number")
+  body             String
+  headline         String?
+  visualNotes      String?        @map("visual_notes")
+  altHooks         String[]       @default([]) @map("alt_hooks")
+  metadata         Json           @default("{}")
+  createdBy        String         @map("created_by")
+  modelUsed        String?        @map("model_used")
+  promptTokens     Int?           @map("prompt_tokens")
+  completionTokens Int?           @map("completion_tokens")
+  createdAt        DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  contentItem      ContentItem    @relation("ItemVersions", fields: [contentItemId], references: [id], onDelete: Cascade)
+  currentForItems  ContentItem[]  @relation("CurrentVersion")
+  reviewRecords    ReviewRecord[]
+
+  @@unique([contentItemId, versionNumber])
+  @@map("content_versions")
+}
+
+model ReviewRecord {
+  id               String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  contentVersionId String           @map("content_version_id") @db.Uuid
+  contentItemId    String           @map("content_item_id") @db.Uuid
+  outcome          ReviewOutcome
+  brandFit         Boolean?         @map("brand_fit")
+  claimSafety      Boolean?         @map("claim_safety")
+  platformFit      Boolean?         @map("platform_fit")
+  clarityScore     Int?             @map("clarity_score")
+  revisionNotes    String?          @map("revision_notes")
+  riskFlags        String[]         @default([]) @map("risk_flags")
+  confidence       ReviewConfidence?
+  reviewerAgent    String           @map("reviewer_agent")
+  modelUsed        String?          @map("model_used")
+  promptTokens     Int?             @map("prompt_tokens")
+  completionTokens Int?             @map("completion_tokens")
+  createdAt        DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  contentItem      ContentItem      @relation(fields: [contentItemId], references: [id], onDelete: Cascade)
+  contentVersion   ContentVersion   @relation(fields: [contentVersionId], references: [id], onDelete: Cascade)
+
+  @@index([contentItemId], map: "idx_review_records_content")
+  @@map("review_records")
+}
+
+model PlatformPublication {
+  id            String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  contentItemId String         @map("content_item_id") @db.Uuid
+  platform      Platform
+  action        PlatformAction
+  platformId    String?        @map("platform_id")
+  platformUrl   String?        @map("platform_url")
+  apiResponse   Json?          @map("api_response")
+  error         String?
+  createdAt     DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  contentItem   ContentItem    @relation(fields: [contentItemId], references: [id], onDelete: Cascade)
+
+  @@map("platform_publications")
+}
+
+model AnalyticsSnapshot {
+  id             String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  contentItemId  String?     @map("content_item_id") @db.Uuid
+  businessId     String      @map("business_id") @db.Uuid
+  platform       Platform
+  snapshotDate   DateTime    @map("snapshot_date") @db.Date
+  impressions    Int?
+  clicks         Int?
+  likes          Int?
+  comments       Int?
+  shares         Int?
+  saves          Int?
+  engagementRate Decimal?    @map("engagement_rate") @db.Decimal(5, 4)
+  reach          Int?
+  rawData        Json?       @map("raw_data")
+  insights       String?
+  createdAt      DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+  business       Business    @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  contentItem    ContentItem? @relation(fields: [contentItemId], references: [id], onDelete: SetNull)
+
+  @@unique([contentItemId, snapshotDate])
+  @@index([businessId, snapshotDate], map: "idx_analytics_business_date")
+  @@map("analytics_snapshots")
+}
+
+model NotificationEvent {
+  id            String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  contentItemId String?     @map("content_item_id") @db.Uuid
+  businessId    String      @map("business_id") @db.Uuid
+  channel       String      @default("telegram")
+  eventType     String      @map("event_type")
+  payload       Json
+  sentAt        DateTime?   @map("sent_at") @db.Timestamptz(6)
+  delivered     Boolean     @default(false)
+  readAt        DateTime?   @map("read_at") @db.Timestamptz(6)
+  createdAt     DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+  business      Business    @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  contentItem   ContentItem? @relation(fields: [contentItemId], references: [id], onDelete: SetNull)
+
+  @@map("notification_events")
+}
+
+model AuditEvent {
+  id            String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  businessId    String?      @map("business_id") @db.Uuid
+  contentItemId String?      @map("content_item_id") @db.Uuid
+  actor         String
+  action        String
+  fromState     ContentState? @map("from_state")
+  toState       ContentState? @map("to_state")
+  details       Json?
+  createdAt     DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  business      Business?    @relation(fields: [businessId], references: [id], onDelete: SetNull)
+  contentItem   ContentItem? @relation(fields: [contentItemId], references: [id], onDelete: SetNull)
+
+  @@index([contentItemId], map: "idx_audit_content")
+  @@index([businessId, createdAt], map: "idx_audit_business_time")
+  @@map("audit_events")
+}

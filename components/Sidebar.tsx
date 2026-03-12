@@ -1,34 +1,50 @@
 "use client";
 
+import { useEffect, useState, type ComponentType } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useOpenClaw } from "@/contexts/OpenClawContext";
+import { BusinessSwitcher } from "@/components/marketing/business-switcher";
+import { NotificationBadge } from "@/components/marketing/notification-badge";
+import type { ContentItem } from "@/types/content";
 import {
+  Activity,
+  BarChart3,
+  Bot,
+  BriefcaseBusiness,
+  CalendarDays,
+  ClipboardCheck,
+  Clock,
   LayoutDashboard,
   MessageSquare,
-  Bot,
-  List,
   Cpu,
-  Mic,
-  Server,
-  Zap,
   Radio,
-  Clock,
-  Settings,
   ScrollText,
+  Settings,
+  Sparkles,
   Wifi,
   WifiOff,
   Loader2,
+  List,
+  Zap,
 } from "lucide-react";
 
-const NAV_ITEMS = [
-  { href: "/", label: "Overview", icon: LayoutDashboard },
+const MARKETING_NAV = [
+  { href: "/pipeline", label: "Pipeline", icon: LayoutDashboard },
+  { href: "/inbox", label: "Inbox", icon: ClipboardCheck, badge: "2" },
+  { href: "/activity", label: "Activity", icon: Activity },
+  { href: "/calendar", label: "Calendar", icon: CalendarDays },
+  { href: "/analytics", label: "Analytics", icon: BarChart3 },
+  { href: "/brands/nelsonai", label: "Brand", icon: Sparkles },
+  { href: "/settings", label: "Settings", icon: BriefcaseBusiness },
+];
+
+const OPS_NAV = [
+  { href: "/overview", label: "Overview", icon: LayoutDashboard },
   { href: "/chat", label: "Chat", icon: MessageSquare },
   { href: "/agents", label: "Agents", icon: Bot },
   { href: "/sessions", label: "Sessions", icon: List },
   { href: "/models", label: "Models", icon: Cpu },
-  { href: "/voice", label: "Voice & STT", icon: Mic },
-  { href: "/nodes", label: "Nodes", icon: Server },
   { href: "/skills", label: "Skills", icon: Zap },
   { href: "/channels", label: "Channels", icon: Radio },
   { href: "/cron", label: "Cron", icon: Clock },
@@ -39,28 +55,62 @@ const NAV_ITEMS = [
 export function Sidebar() {
   const pathname = usePathname();
   const { state, isConnected } = useOpenClaw();
+  const [pendingCount, setPendingCount] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadPending() {
+      try {
+        const response = await fetch("/api/content-items", { cache: "no-store" });
+        const payload = await response.json();
+        const items = Array.isArray(payload.items) ? payload.items : [];
+        const count = items.filter((item: ContentItem) =>
+          ["approved", "draft_on_platform", "notified"].includes(item.state),
+        ).length;
+
+        if (!cancelled) {
+          setPendingCount(count);
+        }
+      } catch {
+        if (!cancelled) {
+          setPendingCount(0);
+        }
+      }
+    }
+
+    void loadPending();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   return (
     <aside
-      className="w-56 flex-shrink-0 border-r flex flex-col h-full"
-      style={{ background: "var(--card)", borderColor: "var(--border)" }}
+      className="hidden w-72 flex-shrink-0 border-r lg:flex lg:flex-col"
+      style={{ background: "var(--sidebar)", borderColor: "var(--border)" }}
     >
-      {/* Logo */}
-      <div className="px-4 py-4 border-b" style={{ borderColor: "var(--border)" }}>
-        <div className="flex items-center gap-2">
-          <span className="text-xl">🦞</span>
-          <span className="text-sm font-bold" style={{ color: "var(--text-primary)" }}>
-            OpenClaw
-          </span>
-          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-500/10 text-blue-400 font-medium">
-            Dashboard
+      <div className="border-b px-5 py-5" style={{ borderColor: "var(--border-strong)" }}>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.28em]" style={{ color: "var(--text-muted)" }}>
+              Marketing Ops
+            </p>
+            <h1 className="mt-2 font-display text-xl font-semibold" style={{ color: "var(--text-primary)" }}>
+              OpenClaw Control
+            </h1>
+          </div>
+          <span className="rounded-full border px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.2em]" style={{ borderColor: "var(--border)", color: "var(--accent-strong)" }}>
+            MVP
           </span>
         </div>
+        <BusinessSwitcher />
       </div>
 
-      {/* Connection status */}
-      <div className="px-4 py-2 border-b" style={{ borderColor: "var(--border)" }}>
-        <div className="flex items-center gap-2">
+      <div className="border-b px-5 py-4" style={{ borderColor: "var(--border)" }}>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
           {state === "connected" ? (
             <Wifi className="w-3.5 h-3.5 text-green-500" />
           ) : state === "connecting" || state === "authenticating" ? (
@@ -89,42 +139,70 @@ export function Sidebar() {
                     : "Disconnected"}
           </span>
         </div>
+          <NotificationBadge count={pendingCount} label="Pending approvals" />
+        </div>
       </div>
 
-      {/* Navigation */}
-      <nav className="flex-1 overflow-y-auto py-2 px-2 space-y-0.5">
-        {NAV_ITEMS.map((item) => {
+      <nav className="flex-1 overflow-y-auto px-3 py-4">
+        <NavSection title="Marketing" items={MARKETING_NAV} pathname={pathname} />
+        <NavSection title="OpenClaw Ops" items={OPS_NAV} pathname={pathname} />
+      </nav>
+
+      <div
+        className="border-t px-5 py-4 text-xs"
+        style={{ borderColor: "var(--border-strong)", color: "var(--text-secondary)" }}
+      >
+        Draft-only publishing. Human approval required.
+      </div>
+    </aside>
+  );
+}
+
+function NavSection({
+  title,
+  items,
+  pathname,
+}: {
+  title: string;
+  items: Array<{ href: string; label: string; icon: ComponentType<{ className?: string }>; badge?: string }>;
+  pathname: string;
+}) {
+  return (
+    <div className="mb-6">
+      <p className="mb-2 px-3 text-[11px] font-semibold uppercase tracking-[0.24em]" style={{ color: "var(--text-muted)" }}>
+        {title}
+      </p>
+      <div className="space-y-1">
+        {items.map((item) => {
           const isActive =
-            item.href === "/"
-              ? pathname === "/"
-              : pathname.startsWith(item.href);
+            pathname === item.href || (item.href !== "/" && pathname.startsWith(`${item.href}/`));
           const Icon = item.icon;
 
           return (
             <Link
               key={item.href}
               href={item.href}
-              className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors ${
+              className={`flex items-center gap-3 rounded-2xl px-3 py-2.5 text-sm transition-colors ${
                 isActive
-                  ? "bg-blue-600/10 text-blue-400 font-medium"
+                  ? "font-medium"
                   : "hover:bg-white/5"
               }`}
-              style={!isActive ? { color: "var(--text-secondary)" } : undefined}
+              style={
+                isActive
+                  ? {
+                      background: "linear-gradient(135deg, rgba(89, 140, 255, 0.16), rgba(83, 188, 180, 0.14))",
+                      color: "var(--text-primary)",
+                    }
+                  : { color: "var(--text-secondary)" }
+              }
             >
               <Icon className="w-4 h-4 flex-shrink-0" />
-              {item.label}
+              <span className="flex-1">{item.label}</span>
+              {item.badge ? <NotificationBadge count={Number(item.badge)} label={item.label} compact /> : null}
             </Link>
           );
         })}
-      </nav>
-
-      {/* Footer */}
-      <div
-        className="px-4 py-3 border-t text-[10px]"
-        style={{ borderColor: "var(--border)", color: "var(--text-secondary)" }}
-      >
-        OpenClaw Dashboard
       </div>
-    </aside>
+    </div>
   );
 }
