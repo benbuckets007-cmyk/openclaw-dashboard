@@ -62,6 +62,9 @@ An AI marketing operations system where OpenClaw agents act as employees that Be
 - **The dashboard is for visibility, not control.** It shows what's in the queue, what's scheduled, and what performed well. The agents and Telegram handle the workflow.
 - **Simplicity enables iteration.** The fewer rigid systems, the easier it is to improve agents and processes as AI evolves.
 - **Manual posting preserves reach.** Native platform scheduling gets better algorithmic treatment than API-posted content.
+- **Write improvements down.** If Ben's Telegram feedback changes writing, review, or workflow behavior, that change should be persisted in workspace files or memory files.
+- **The Orchestrator is the relationship surface.** Ben builds trust and working rhythm with one persistent agent identity; sub-agents exist to increase throughput, not replace that relationship.
+- **Business context is modular.** Shared orchestration stays global; brand nuance, editorial lessons, and process notes live per business.
 
 ---
 
@@ -146,7 +149,9 @@ An AI marketing operations system where OpenClaw agents act as employees that Be
 │  OpenClaw Workspace (agent config + brand knowledge)         │
 │  ├── SOUL.md, AGENTS.md, HEARTBEAT.md (agent personality)    │
 │  ├── memory/ (agent learning — daily logs + long-term)       │
+│  ├── prompts/ (writer, reviewer, platform, checklist)        │
 │  ├── businesses/{slug}/brand-profile.md (brand knowledge)    │
+│  ├── businesses/{slug}/*.md (lessons, audience, process)     │
 │  └── skills/ + jobs/ (custom skills and helper scripts)      │
 │                                                              │
 └─────────────────────────────────────────────────────────────┘
@@ -163,6 +168,7 @@ An AI marketing operations system where OpenClaw agents act as employees that Be
 | Dashboard purpose | Visibility only | Content queue, calendar, analytics. No approval UI — that's Telegram |
 | Publishing model | Manual batch scheduling | Ben schedules posts natively on each platform. Preserves organic reach, takes ~5 min/week |
 | Agent improvement | Conversation + memory | Ben chats with agents via Telegram. Feedback persists in OpenClaw's memory system |
+| Improvement medium | Markdown files + memory | Durable behavior changes should be reflected in workspace files, not left as implicit chat history only |
 | Model strategy | High-reasoning for Orchestrator + Reviewer; standard for Writer | Quality where judgment matters, cost savings where generation suffices |
 
 ---
@@ -462,6 +468,17 @@ CREATE TRIGGER check_state_transition
 
 Three LLM-powered agents running under a single OpenClaw Gateway. The Orchestrator is persistent with its own workspace, heartbeat, and Telegram binding. The Content Writer and Reviewer are spawned as sub-agents per-task.
 
+### Persistent Identity Model
+
+In MVP, **Ben talks to one persistent agent on Telegram: the Orchestrator**. This agent is the long-lived right-hand operator that accumulates taste, process knowledge, and working context over time.
+
+Temporary sub-agents are still used for focused tasks:
+
+- **Content Writer** — disposable specialist for drafting
+- **Reviewer** — disposable specialist for critique/QA
+
+These sub-agents are spawned per task via `sessions_spawn`. They should remain temporary at first; their durable behavior should come from workspace prompt files and business context rather than from giving each of them a separate long-lived identity.
+
 ### Gateway Config (`~/.openclaw/config.json5`)
 
 ```json5
@@ -622,6 +639,32 @@ Ben is the owner/operator of this marketing system. He's a software engineer who
 - Best notification times: weekday mornings (Mon–Fri, before 10am)
 ```
 
+### Role Definition Files
+
+Writer and Reviewer are temporary spawned workers, but they should not be defined only by ad-hoc inline prompts. Their behavior should be assembled from durable workspace files so Ben's Telegram feedback can improve them over time.
+
+Recommended files:
+
+```text
+prompts/
+├── content-writer.md
+├── reviewer.md
+├── shared/
+│   └── review-checklist.md
+└── platform/
+    ├── linkedin.md
+    └── facebook.md
+```
+
+Optional per-business overlays:
+
+```text
+businesses/{slug}/writer-notes.md
+businesses/{slug}/reviewer-notes.md
+```
+
+The Orchestrator should compose Writer/Reviewer task prompts from these files plus the business brand files and the specific content brief.
+
 ### Sub-Agent Prompt Templates
 
 These are spawned via `sessions_spawn` with task-specific prompts. The Orchestrator constructs prompts dynamically.
@@ -743,6 +786,31 @@ The main OpenClaw-specific correction is that the system should **not** rely on 
 - **The app/backend is good at:** durable writes, structured state transitions, admin actions, and deterministic reporting.
 - **Ben stays in Telegram:** this matches OpenClaw's strengths instead of forcing a dashboard-first control model.
 
+### 5.4 Continuous Improvement Loop
+
+Ben's Telegram feedback is one of the main product features, so the system should treat it as structured input rather than vague chat context.
+
+The Orchestrator should classify feedback into categories such as:
+
+- **Operational requests** — run planning, show queue, explain blockers
+- **Content feedback** — tone, hooks, CTA style, image direction
+- **Process feedback** — batch timing, notification frequency, escalation thresholds
+- **Strategic guidance** — market angle, audience focus, business priorities
+
+Then it should persist that feedback intentionally:
+
+1. Write the raw note to `memory/YYYY-MM-DD.md`
+2. If the change is durable, promote it into the right long-term file
+3. Confirm back to Ben what changed
+
+Typical durable destinations:
+
+- `MEMORY.md` for long-term operator preferences
+- `businesses/{slug}/editorial-lessons.md` for brand/content learnings
+- `businesses/{slug}/process-notes.md` for notification/batching/workflow rules
+- `businesses/{slug}/audience-notes.md` for recurring pain points and angles
+- `prompts/content-writer.md` or `prompts/shared/review-checklist.md` for cross-business behavior changes
+
 ### 5.4 Approval and idempotency notes
 
 - Do not assume a special approval gate runtime exists unless you verify it in the exact deployed toolchain.
@@ -752,9 +820,30 @@ The main OpenClaw-specific correction is that the system should **not** rely on 
 
 ---
 
+### 5.5 Source of Truth by Layer
+
+To keep the system both reliable and improvable, the split between Postgres and Markdown should be explicit.
+
+**Postgres stores operational facts:**
+- content items and workflow state
+- versions and reviews
+- analytics snapshots
+- audit history
+
+**Workspace Markdown stores judgment and learning:**
+- agent identity (`SOUL.md`, `AGENTS.md`, `USER.md`)
+- operational habits (`HEARTBEAT.md`)
+- long-term memory (`MEMORY.md`, `memory/*.md`)
+- role definitions (`prompts/*.md`)
+- brand nuance and editorial learning (`businesses/{slug}/*.md`)
+
+This means the database is the source of truth for workflow facts, while workspace files are the source of truth for behavior, taste, and continuous improvement.
+
+---
+
 ## 6. Custom Skills
 
-Each skill lives in `~/.openclaw/workspaces/marketing-ops/skills/`. Only 4 custom skills needed (down from 6 in v1 — removed linkedin-publisher and facebook-publisher).
+Each skill lives in `~/.openclaw/workspaces/marketing-ops/skills/`. Only 4 custom skills needed (down from 6 in v1 — removed linkedin-publisher and facebook-publisher). Skills should remain mostly deterministic: they should parse, format, read/write state, and call APIs, but they should not become hidden stores of strategy or editorial judgment.
 
 ### 6.1 brand-context-builder
 
@@ -943,6 +1032,17 @@ Telegram is the primary interface. Ben interacts with the system through Telegra
 
 OpenClaw handles the Telegram channel natively — the bot is bound to the Orchestrator agent, so messaging the bot = talking to the Orchestrator.
 
+### Telegram Message Types
+
+The Orchestrator should interpret Telegram messages in a few clear buckets:
+
+1. **Operational commands** — e.g. 'what's blocked?', 'run planning now', 'show me what's ready'
+2. **Content feedback** — e.g. 'too formal', 'stronger hooks', 'less generic CTA'
+3. **Process feedback** — e.g. 'batch notifications only', 'don't alert me for minor issues'
+4. **Strategic guidance** — e.g. 'lean harder into founder POV', 'target CFOs more directly'
+
+Each category should map to a different persistence/update path rather than being treated as generic chat history.
+
 ### Interaction Patterns
 
 **Receiving notifications:**
@@ -961,6 +1061,17 @@ The Orchestrator writes this to its memory (`memory/YYYY-MM-DD.md` and eventuall
 
 **Approving weekly plans:**
 When weekly planning runs, the system sends a summary to Telegram. Ben replies to approve or adjust, and deterministic code records the resulting plan changes.
+
+### Weekly Improvement Review
+
+Once per week, the Orchestrator should send a short operational review summarizing:
+
+- what content was produced
+- what Ben changed or pushed back on
+- what content patterns seem to be working
+- one or two proposed prompt/process improvements
+
+This keeps the system compounding over time instead of just executing tasks. Important takeaways from these reviews should be promoted into the relevant business files or long-term memory files.
 
 ### Notification Events
 
@@ -1115,21 +1226,15 @@ Key features:
 │       │
 │       ├── businesses/
 │       │   └── nelsonai/
-│       │       ├── brand-profile.md    # Full brand profile
-│       │       ├── compliance.md       # What can/cannot be said
-│       │       ├── offers.md           # Service/offer details
-│       │       ├── audience.md         # Audience segments and pain points
+│       │       ├── brand-profile.md    # Stable brand identity
+│       │       ├── editorial-lessons.md# Learned content/style improvements
+│       │       ├── process-notes.md    # Batch/notification/workflow preferences
+│       │       ├── audience-notes.md   # Recurring pains, objections, resonant angles
+│       │       ├── writer-notes.md     # Optional Writer-specific overlay
+│       │       ├── reviewer-notes.md   # Optional Reviewer-specific overlay
 │       │       └── examples/
 │       │           ├── winning-posts.md
 │       │           └── avoided-posts.md
-│       │
-│       ├── prompts/
-│       │   ├── shared/
-│       │   │   ├── review-checklist.md
-│       │   │   └── style-rules.md
-│       │   └── platform/
-│       │       ├── linkedin.md         # LinkedIn writing rules
-│       │       └── facebook.md         # Facebook writing rules
 │       │
 │       └── skills/
 │           ├── brand-context-builder/
@@ -1312,15 +1417,15 @@ ADMIN_SECRET=
 ### Phase 2: Content Pipeline (Days 5–10)
 **Goal:** End-to-end content creation — brief to ready-to-post.
 
-- [ ] Build Content Writer sub-agent spawn template
-- [ ] Build Reviewer sub-agent spawn template
+- [ ] Build Content Writer prompt composition from workspace files
+- [ ] Build Reviewer prompt composition from workspace files
 - [ ] Implement deterministic content lifecycle orchestration helper(s)
 - [ ] Implement weekly planning prompt + write-back helper(s)
 - [ ] Configure heartbeat
 - [ ] Configure cron jobs (weekly planning + analytics)
 - [ ] Test: full cycle from brief → draft → review → ready_to_post → Telegram notification
 
-**Deliverable:** Can go from a content brief to approved, ready-to-post content with Telegram notification.
+**Deliverable:** Can go from a content brief to approved, ready-to-post content with Telegram notification, and improvements can be persisted into workspace files.
 
 ### Phase 3: Dashboard MVP (Days 10–16)
 **Goal:** Web UI for content queue and agent visibility.
@@ -1385,6 +1490,24 @@ When analytics-collector detects a post with engagement_rate > 2x business avera
 This creates a data-driven bridge between organic content and paid amplification without requiring any ad platform integrations in this system.
 
 ---
+
+## 12.1 Recommended File Responsibilities
+
+To make continuous improvement reliable, each class of knowledge should have an obvious home:
+
+- `SOUL.md` — who the Orchestrator is and how it behaves
+- `AGENTS.md` — which specialist roles exist and when to delegate
+- `USER.md` — what Ben prefers globally
+- `HEARTBEAT.md` — recurring checks and notification habits
+- `MEMORY.md` — long-term durable lessons
+- `memory/YYYY-MM-DD.md` — raw daily operational memory
+- `prompts/*.md` — shared role behavior for Writer/Reviewer
+- `businesses/{slug}/brand-profile.md` — stable business identity
+- `businesses/{slug}/editorial-lessons.md` — content-specific learnings over time
+- `businesses/{slug}/process-notes.md` — workflow, batching, escalation, and notification preferences
+- `businesses/{slug}/audience-notes.md` — recurring audience pains and resonant angles
+
+When Ben gives feedback on Telegram, the Orchestrator should update one of these files instead of relying on vague recollection alone.
 
 ## 13. Appendix
 
